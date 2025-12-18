@@ -1,0 +1,1029 @@
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  HashRouter,
+  Routes,
+  Route,
+  Navigate,
+  Link,
+  useLocation,
+  useNavigate,
+  useParams
+} from "react-router-dom";
+
+import {
+  Bell,
+  BookOpen,
+  ChevronRight,
+  CloudUpload,
+  Folder,
+  LayoutDashboard,
+  LogOut,
+  Search,
+  Settings,
+  Trash2,
+  Download,
+  Plus,
+  X,
+  FileText,
+  Image as ImageIcon,
+  Sigma,
+  FlaskConical,
+  Code2
+} from "lucide-react";
+
+import {
+  clearSession,
+  defaultConfig,
+  formatBytes,
+  getSession,
+  idbDel,
+  idbGet,
+  idbPut,
+  loadConfig,
+  loadMeta,
+  saveConfig,
+  saveMeta,
+  setSession,
+  todayISO,
+  uid
+} from "./storage";
+
+// -------------------------
+// Categorías “carpetas”
+// -------------------------
+const CATEGORIES = [
+  { key: "tasks", label: "Lista de tareas", icon: Folder },
+  { key: "solutions", label: "Soluciones de tareas", icon: FileText },
+  { key: "controlExams", label: "Exámenes de control", icon: FileText },
+  { key: "etsExams", label: "Exámenes ETS", icon: FileText },
+  { key: "references", label: "Libros de referencia", icon: BookOpen },
+  { key: "archives", label: "Archivos", icon: Folder }
+];
+
+function iconForSubjectName(name) {
+  const n = (name || "").toLowerCase();
+  if (n.includes("álgebra") || n.includes("algebra")) return Sigma;
+  if (n.includes("trigo") || n.includes("física") || n.includes("fisica")) return FlaskConical;
+  if (n.includes("analítica") || n.includes("analitica")) return Code2;
+  return BookOpen;
+}
+
+// -------------------------
+// Auth Guard (LOCAL)
+// -------------------------
+function RequireAuth({ children }) {
+  const session = getSession();
+  const loc = useLocation();
+  if (!session?.ok) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  return children;
+}
+
+// -------------------------
+// App Root
+// -------------------------
+export default function App() {
+  return (
+    <HashRouter>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/app/*"
+          element={
+            <RequireAuth>
+              <Shell />
+            </RequireAuth>
+          }
+        />
+        <Route path="*" element={<Navigate to="/app" replace />} />
+      </Routes>
+    </HashRouter>
+  );
+}
+
+// -------------------------
+// Login (LOCAL)
+// -------------------------
+function Login() {
+  const nav = useNavigate();
+  const [cfg, setCfg] = useState(() => loadConfig());
+  const [email, setEmail] = useState(cfg.admin.email);
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    setCfg(loadConfig());
+  }, []);
+
+  const onSubmit = (e) => {
+    e.preventDefault();
+    const fresh = loadConfig();
+    if (email.trim() === fresh.admin.email && password === fresh.admin.password) {
+      setSession({ ok: true, email, at: Date.now() });
+      nav("/app");
+      return;
+    }
+    setErr("Correo o contraseña incorrectos.");
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
+      <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/40 shadow-soft overflow-hidden">
+        <div className="p-6 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center">
+              <BookOpen className="text-blue-300" size={18} />
+            </div>
+            <div>
+              <div className="font-bold text-lg leading-tight">{cfg.academyName}</div>
+              <div className="text-xs text-slate-400">Iniciar sesión</div>
+            </div>
+          </div>
+        </div>
+
+        <form onSubmit={onSubmit} className="p-6 space-y-4">
+          {err && (
+            <div className="rounded-xl bg-red-500/10 border border-red-500/30 text-red-200 px-4 py-3 text-sm">
+              {err}
+            </div>
+          )}
+          <div>
+            <label className="block text-sm font-bold text-slate-300 mb-2">Correo</label>
+            <input
+              className="w-full rounded-xl border border-slate-700 bg-slate-950/40 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="admin@academia.com"
+              autoComplete="email"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-bold text-slate-300 mb-2">Contraseña</label>
+            <input
+              type="password"
+              className="w-full rounded-xl border border-slate-700 bg-slate-950/40 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              autoComplete="current-password"
+            />
+          </div>
+          <button className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 transition px-4 py-3 font-bold">
+            Entrar
+          </button>
+
+          <div className="text-xs text-slate-400">
+            * Login local temporal (luego migramos a Firebase Auth).
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------
+// Shell (layout)
+// -------------------------
+function Shell() {
+  const [cfg, setCfg] = useState(() => loadConfig());
+  const [meta, setMeta] = useState(() => loadMeta());
+  const [query, setQuery] = useState("");
+  const [notifOpen, setNotifOpen] = useState(false);
+
+  useEffect(() => setCfg(loadConfig()), []);
+  useEffect(() => saveMeta(meta), [meta]);
+
+  const subjects = cfg.subjects || [];
+
+  const onLogout = () => {
+    clearSession();
+    window.location.hash = "#/login";
+  };
+
+  // notifications (demo útil): conteo por “tareas” sin descargar
+  const notifCount = useMemo(() => {
+    const tasks = meta.filter((m) => m.category === "tasks");
+    return tasks.length;
+  }, [meta]);
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white">
+      <div className="flex min-h-screen">
+        <Sidebar cfg={cfg} />
+
+        <div className="flex-1 flex flex-col">
+          <Topbar
+            academyName={cfg.academyName}
+            query={query}
+            setQuery={setQuery}
+            notifCount={notifCount}
+            notifOpen={notifOpen}
+            setNotifOpen={setNotifOpen}
+            onLogout={onLogout}
+          />
+
+          <div className="p-6 md:p-8">
+            <Routes>
+              <Route path="/" element={<Dashboard cfg={cfg} meta={meta} />} />
+
+              <Route
+                path="/subject/:id"
+                element={
+                  <Subject
+                    cfg={cfg}
+                    meta={meta}
+                    setMeta={setMeta}
+                    query={query}
+                  />
+                }
+              />
+
+              <Route
+                path="/archives"
+                element={
+                  <Archives cfg={cfg} meta={meta} setMeta={setMeta} query={query} />
+                }
+              />
+
+              <Route
+                path="/settings"
+                element={
+                  <SettingsPage
+                    cfg={cfg}
+                    setCfg={setCfg}
+                    subjects={subjects}
+                  />
+                }
+              />
+
+              <Route path="*" element={<Navigate to="/app" replace />} />
+            </Routes>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------
+// Sidebar
+// -------------------------
+function Sidebar({ cfg }) {
+  const subjects = cfg.subjects || [];
+  const loc = useLocation();
+  const isActive = (path) => loc.pathname === path;
+
+  return (
+    <aside className="w-[285px] hidden md:flex flex-col border-r border-slate-800 bg-slate-950/60">
+      <div className="p-6 border-b border-slate-800">
+        <div className="flex items-center gap-3">
+          <div className="h-12 w-12 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center">
+            <BookOpen className="text-blue-300" size={20} />
+          </div>
+          <div>
+            <div className="font-bold leading-tight">{cfg.academyName}</div>
+            <div className="text-xs text-slate-400">Repositorio</div>
+          </div>
+        </div>
+      </div>
+
+      <nav className="flex-1 p-4 space-y-6">
+        <div>
+          <div className="text-[11px] uppercase tracking-widest text-slate-500 px-3 mb-2">
+            Principal
+          </div>
+          <Link
+            to="/app"
+            className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition ${
+              isActive("/app")
+                ? "bg-slate-900 border-slate-700"
+                : "border-transparent hover:bg-slate-900/40"
+            }`}
+          >
+            <LayoutDashboard size={18} className="text-slate-300" />
+            <span className="font-semibold">Dashboard</span>
+          </Link>
+        </div>
+
+        <div>
+          <div className="text-[11px] uppercase tracking-widest text-slate-500 px-3 mb-2">
+            Materias
+          </div>
+
+          <div className="space-y-2">
+            {subjects.map((s) => {
+              const Icon = iconForSubjectName(s.name);
+              const path = `/app/subject/${s.id}`;
+              const active = loc.pathname === path;
+              return (
+                <Link
+                  key={s.id}
+                  to={path}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition ${
+                    active
+                      ? "bg-blue-600/15 border-blue-500/30"
+                      : "border-transparent hover:bg-slate-900/40"
+                  }`}
+                >
+                  <Icon size={18} className={active ? "text-blue-300" : "text-slate-300"} />
+                  <span className="font-semibold">{s.name}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-[11px] uppercase tracking-widest text-slate-500 px-3 mb-2">
+            Herramientas
+          </div>
+
+          <Link
+            to="/app/archives"
+            className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition ${
+              isActive("/app/archives")
+                ? "bg-slate-900 border-slate-700"
+                : "border-transparent hover:bg-slate-900/40"
+            }`}
+          >
+            <Folder size={18} className="text-slate-300" />
+            <span className="font-semibold">Archivos</span>
+          </Link>
+
+          <Link
+            to="/app/settings"
+            className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition ${
+              isActive("/app/settings")
+                ? "bg-slate-900 border-slate-700"
+                : "border-transparent hover:bg-slate-900/40"
+            }`}
+          >
+            <Settings size={18} className="text-slate-300" />
+            <span className="font-semibold">Configuración</span>
+          </Link>
+        </div>
+      </nav>
+
+      <div className="p-4 border-t border-slate-800 text-xs text-slate-500">
+        Guardado local (por navegador) • luego migramos a Firebase
+      </div>
+    </aside>
+  );
+}
+
+// -------------------------
+// Topbar
+// -------------------------
+function Topbar({ query, setQuery, notifCount, notifOpen, setNotifOpen, onLogout }) {
+  return (
+    <div className="sticky top-0 z-40 border-b border-slate-800 bg-slate-950/70 backdrop-blur">
+      <div className="p-4 md:p-5 flex items-center gap-3">
+        <div className="flex-1 flex items-center gap-2 bg-slate-900/40 border border-slate-800 rounded-2xl px-4 py-2.5">
+          <Search size={16} className="text-slate-400" />
+          <input
+            className="w-full bg-transparent outline-none text-sm placeholder:text-slate-500"
+            placeholder="Buscar… (por nombre de archivo)"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="relative">
+          <button
+            onClick={() => setNotifOpen((v) => !v)}
+            className="h-11 w-11 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/70 transition flex items-center justify-center"
+            title="Notificaciones"
+          >
+            <Bell size={18} className="text-slate-200" />
+            {notifCount > 0 && (
+              <span className="absolute -top-1 -right-1 text-[11px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded-full">
+                {notifCount}
+              </span>
+            )}
+          </button>
+
+          {notifOpen && (
+            <div className="absolute right-0 mt-2 w-72 rounded-2xl border border-slate-800 bg-slate-950 shadow-soft overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+                <div className="font-bold">Notificaciones</div>
+                <button onClick={() => setNotifOpen(false)} className="text-slate-400 hover:text-white">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="p-4 text-sm text-slate-300">
+                {notifCount > 0 ? (
+                  <div>Hay <b>{notifCount}</b> archivo(s) en “Lista de tareas”.</div>
+                ) : (
+                  <div className="text-slate-400">Sin notificaciones.</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <button
+          onClick={onLogout}
+          className="h-11 px-4 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/70 transition flex items-center gap-2"
+          title="Cerrar sesión"
+        >
+          <LogOut size={16} className="text-slate-200" />
+          <span className="hidden md:block text-sm font-semibold">Salir</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------
+// Dashboard
+// -------------------------
+function Dashboard({ cfg, meta }) {
+  const subjects = cfg.subjects || [];
+  const first = subjects[0];
+
+  return (
+    <div className="space-y-6">
+      <div className="text-slate-400 text-sm">
+        Principal <ChevronRight className="inline" size={14} /> Dashboard
+      </div>
+
+      <div className="rounded-3xl border border-slate-800 bg-slate-900/30 p-6 md:p-8 shadow-soft">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <div className="inline-flex items-center gap-2 text-xs font-bold px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-200">
+              ● Repositorio activo
+            </div>
+            <div className="mt-3 text-3xl md:text-4xl font-black">
+              Panel principal
+            </div>
+            <p className="mt-2 text-slate-300 max-w-2xl">
+              Organiza tus archivos por materia y por carpeta (tareas, exámenes, ETS, libros, etc.).
+              Por ahora todo se guarda en tu navegador (local) y luego lo migramos a Firebase.
+            </p>
+          </div>
+
+          <Link
+            to={first ? `/app/subject/${first.id}` : "/app/settings"}
+            className="shrink-0 inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-white text-slate-900 font-bold hover:opacity-90 transition"
+          >
+            <LayoutDashboard size={18} />
+            Ir a materias
+          </Link>
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <StatCard label="Materias" value={`${subjects.length}`} />
+          <StatCard label="Archivos totales" value={`${meta.length}`} />
+          <StatCard label="Última subida" value={meta[0]?.uploadedAt ? new Date(meta[0].uploadedAt).toLocaleString() : "—"} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value }) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+      <div className="text-xs uppercase tracking-widest text-slate-500">{label}</div>
+      <div className="mt-2 text-2xl font-black">{value}</div>
+    </div>
+  );
+}
+
+// -------------------------
+// Subject Page (tabs + upload + listas)
+// -------------------------
+function Subject({ cfg, meta, setMeta, query }) {
+  const { id } = useParams();
+  const subject = (cfg.subjects || []).find((s) => s.id === id);
+  const [tab, setTab] = useState("tasks");
+  const [uploadOpen, setUploadOpen] = useState(false);
+
+  useEffect(() => {
+    setTab("tasks");
+  }, [id]);
+
+  if (!subject) {
+    return (
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/30 p-6">
+        Materia no encontrada. Ve a configuración.
+      </div>
+    );
+  }
+
+  const filtered = useMemo(() => {
+    const q = (query || "").trim().toLowerCase();
+    return meta
+      .filter((m) => m.subjectId === subject.id && m.category === tab)
+      .filter((m) => !q || (m.name || "").toLowerCase().includes(q))
+      .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+  }, [meta, subject.id, tab, query]);
+
+  return (
+    <div className="space-y-6">
+      <div className="text-slate-400 text-sm">
+        Materias <ChevronRight className="inline" size={14} /> {subject.name}
+      </div>
+
+      <div className="rounded-3xl border border-slate-800 bg-slate-900/30 p-6 md:p-8 shadow-soft">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <div className="inline-flex items-center gap-2 text-xs font-bold px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-200">
+              ● Curso activo
+            </div>
+            <div className="mt-3 text-4xl font-black">{subject.name}</div>
+            <p className="mt-2 text-slate-300 max-w-2xl">
+              Sube archivos y organízalos por carpeta. Los botones de tabs y sidebar ya son reales.
+            </p>
+          </div>
+
+          <button
+            onClick={() => setUploadOpen(true)}
+            className="shrink-0 inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-white text-slate-900 font-bold hover:opacity-90 transition"
+          >
+            <CloudUpload size={18} />
+            Subir nuevo archivo
+          </button>
+        </div>
+
+        <div className="mt-6">
+          <Tabs tab={tab} setTab={setTab} />
+        </div>
+      </div>
+
+      <div className="rounded-3xl border border-slate-800 bg-slate-900/20 p-5 md:p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="font-black text-lg">Archivos</div>
+          <div className="text-sm text-slate-400">{filtered.length} elemento(s)</div>
+        </div>
+
+        <div className="space-y-3">
+          {filtered.map((f) => (
+            <FileRow key={f.id} fileMeta={f} onDelete={async () => {
+              await idbDel(f.id);
+              setMeta((prev) => prev.filter((x) => x.id !== f.id));
+            }} />
+          ))}
+
+          {filtered.length === 0 && (
+            <div className="text-slate-400 text-sm p-6 text-center border border-dashed border-slate-800 rounded-2xl">
+              No hay archivos aquí todavía. Usa “Subir nuevo archivo”.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {uploadOpen && (
+        <UploadModal
+          subject={subject}
+          tab={tab}
+          onClose={() => setUploadOpen(false)}
+          onUpload={async (file) => {
+            const id = uid("file");
+            await idbPut(id, file);
+
+            const metaItem = {
+              id,
+              subjectId: subject.id,
+              category: tab,
+              name: file.name,
+              size: file.size,
+              mime: file.type || "application/octet-stream",
+              uploadedAt: todayISO()
+            };
+
+            setMeta((prev) => [metaItem, ...prev]);
+            setUploadOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Tabs({ tab, setTab }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {CATEGORIES.filter(c => c.key !== "archives").map((t) => {
+        const active = tab === t.key;
+        const Icon = t.icon;
+        return (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-2xl border transition text-sm font-bold ${
+              active
+                ? "bg-blue-600/15 border-blue-500/30 text-blue-200"
+                : "bg-slate-950/10 border-slate-800 text-slate-300 hover:bg-slate-900/40"
+            }`}
+          >
+            <Icon size={16} />
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function FileRow({ fileMeta, onDelete }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const isImage = fileMeta.mime.startsWith("image/");
+  const Icon = isImage ? ImageIcon : FileText;
+
+  const onDownload = async () => {
+    setDownloading(true);
+    try {
+      const blob = await idbGet(fileMeta.id);
+      if (!blob) return;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileMeta.name || "archivo";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-950/20 p-4 flex items-center justify-between gap-4">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="h-10 w-10 rounded-2xl bg-slate-900/60 border border-slate-800 flex items-center justify-center">
+          <Icon size={18} className="text-slate-200" />
+        </div>
+
+        <div className="min-w-0">
+          <div className="font-bold truncate">{fileMeta.name}</div>
+          <div className="text-xs text-slate-400">
+            {formatBytes(fileMeta.size)} • {new Date(fileMeta.uploadedAt).toLocaleString()}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onDownload}
+          className="h-10 px-3 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/70 transition inline-flex items-center gap-2 text-sm font-bold"
+          title="Descargar"
+        >
+          <Download size={16} />
+          {downloading ? "…" : "Descargar"}
+        </button>
+
+        <button
+          onClick={onDelete}
+          className="h-10 w-10 rounded-2xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition flex items-center justify-center"
+          title="Eliminar"
+        >
+          <Trash2 size={16} className="text-red-200" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------
+// Upload Modal
+// -------------------------
+function UploadModal({ subject, tab, onClose, onUpload }) {
+  const catLabel = CATEGORIES.find((c) => c.key === tab)?.label || "Carpeta";
+  const [file, setFile] = useState(null);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="w-full max-w-lg rounded-3xl border border-slate-800 bg-slate-950 shadow-soft overflow-hidden">
+        <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <div className="font-black text-lg">Subir archivo</div>
+            <div className="text-sm text-slate-400">
+              {subject.name} • {catLabel}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white">
+            <X />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="rounded-2xl border border-dashed border-slate-800 p-5 bg-slate-900/20">
+            <input
+              type="file"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              className="block w-full text-sm text-slate-200 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:font-bold file:bg-white file:text-slate-900 hover:file:opacity-90"
+            />
+            <div className="text-xs text-slate-400 mt-2">
+              Se guarda localmente en tu navegador (IndexedDB). Luego lo migraremos a Firebase Storage.
+            </div>
+          </div>
+
+          <button
+            disabled={!file}
+            onClick={() => file && onUpload(file)}
+            className={`w-full rounded-2xl px-4 py-3 font-black transition inline-flex items-center justify-center gap-2 ${
+              file ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-800 text-slate-400 cursor-not-allowed"
+            }`}
+          >
+            <Plus size={18} />
+            Guardar en esta carpeta
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------
+// Archives (vista global)
+// -------------------------
+function Archives({ cfg, meta, setMeta, query }) {
+  const subjects = cfg.subjects || [];
+  const [cat, setCat] = useState("archives");
+
+  const filtered = useMemo(() => {
+    const q = (query || "").trim().toLowerCase();
+    return meta
+      .filter((m) => m.category === cat)
+      .filter((m) => !q || (m.name || "").toLowerCase().includes(q))
+      .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+  }, [meta, cat, query]);
+
+  const subjectName = (id) => subjects.find((s) => s.id === id)?.name || "—";
+
+  return (
+    <div className="space-y-6">
+      <div className="text-slate-400 text-sm">
+        Herramientas <ChevronRight className="inline" size={14} /> Archivos
+      </div>
+
+      <div className="rounded-3xl border border-slate-800 bg-slate-900/30 p-6 shadow-soft">
+        <div className="font-black text-3xl">Archivos</div>
+        <p className="text-slate-300 mt-2">
+          Vista global por carpeta. (Aquí también funciona el buscador.)
+        </p>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {CATEGORIES.map((c) => {
+            const active = cat === c.key;
+            const Icon = c.icon;
+            return (
+              <button
+                key={c.key}
+                onClick={() => setCat(c.key)}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-2xl border transition text-sm font-bold ${
+                  active
+                    ? "bg-blue-600/15 border-blue-500/30 text-blue-200"
+                    : "bg-slate-950/10 border-slate-800 text-slate-300 hover:bg-slate-900/40"
+                }`}
+              >
+                <Icon size={16} />
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="rounded-3xl border border-slate-800 bg-slate-900/20 p-5 md:p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="font-black text-lg">Listado</div>
+          <div className="text-sm text-slate-400">{filtered.length} elemento(s)</div>
+        </div>
+
+        <div className="space-y-3">
+          {filtered.map((f) => (
+            <div
+              key={f.id}
+              className="rounded-2xl border border-slate-800 bg-slate-950/20 p-4 flex items-center justify-between gap-4"
+            >
+              <div className="min-w-0">
+                <div className="font-bold truncate">{f.name}</div>
+                <div className="text-xs text-slate-400">
+                  {subjectName(f.subjectId)} • {formatBytes(f.size)} • {new Date(f.uploadedAt).toLocaleString()}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={async () => {
+                    const blob = await idbGet(f.id);
+                    if (!blob) return;
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = f.name || "archivo";
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="h-10 px-3 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/70 transition inline-flex items-center gap-2 text-sm font-bold"
+                >
+                  <Download size={16} />
+                  Descargar
+                </button>
+
+                <button
+                  onClick={async () => {
+                    await idbDel(f.id);
+                    setMeta((prev) => prev.filter((x) => x.id !== f.id));
+                  }}
+                  className="h-10 w-10 rounded-2xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition flex items-center justify-center"
+                  title="Eliminar"
+                >
+                  <Trash2 size={16} className="text-red-200" />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {filtered.length === 0 && (
+            <div className="text-slate-400 text-sm p-6 text-center border border-dashed border-slate-800 rounded-2xl">
+              No hay archivos en esta carpeta.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------
+// Settings Page (configurable)
+// -------------------------
+function SettingsPage({ cfg, setCfg }) {
+  const [academyName, setAcademyName] = useState(cfg.academyName || "");
+  const [logoUrl, setLogoUrl] = useState(cfg.logoUrl || "");
+  const [adminEmail, setAdminEmail] = useState(cfg.admin?.email || "");
+  const [adminPass, setAdminPass] = useState(cfg.admin?.password || "");
+
+  const [subjects, setSubjects] = useState(cfg.subjects || []);
+  const [newSubjectName, setNewSubjectName] = useState("");
+
+  const onSave = () => {
+    const next = {
+      ...cfg,
+      academyName: academyName.trim() || "Academia",
+      logoUrl: logoUrl.trim(),
+      admin: { email: adminEmail.trim() || "admin@academia.com", password: adminPass || "admin123" },
+      subjects
+    };
+    saveConfig(next);
+    setCfg(next);
+    alert("✅ Configuración guardada.");
+  };
+
+  const addSubject = () => {
+    const name = newSubjectName.trim();
+    if (!name) return;
+    const id = name
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "");
+    const finalId = id || uid("subject");
+    if (subjects.some((s) => s.id === finalId)) {
+      alert("Ese ID ya existe. Cambia el nombre.");
+      return;
+    }
+    setSubjects((prev) => [...prev, { id: finalId, name }]);
+    setNewSubjectName("");
+  };
+
+  const removeSubject = (id) => {
+    if (!confirm("¿Eliminar materia? (No borra archivos locales automáticamente)")) return;
+    setSubjects((prev) => prev.filter((s) => s.id !== id));
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="text-slate-400 text-sm">
+        Herramientas <ChevronRight className="inline" size={14} /> Configuración
+      </div>
+
+      <div className="rounded-3xl border border-slate-800 bg-slate-900/30 p-6 shadow-soft">
+        <div className="font-black text-3xl">Configuración</div>
+        <p className="text-slate-300 mt-2">
+          Define el nombre de la academia, logo y materias. (Todo local por ahora).
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="rounded-3xl border border-slate-800 bg-slate-900/20 p-6">
+          <div className="font-black text-lg mb-4">Academia</div>
+
+          <div className="space-y-4">
+            <Field label="Nombre de la Academia">
+              <input
+                className="w-full rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+                value={academyName}
+                onChange={(e) => setAcademyName(e.target.value)}
+              />
+            </Field>
+
+            <Field label="Logo URL (opcional)">
+              <input
+                className="w-full rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+                value={logoUrl}
+                onChange={(e) => setLogoUrl(e.target.value)}
+                placeholder="https://..."
+              />
+            </Field>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/20 p-4">
+              <div className="font-black mb-2">Login (local temporal)</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Field label="Correo admin">
+                  <input
+                    className="w-full rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+                    value={adminEmail}
+                    onChange={(e) => setAdminEmail(e.target.value)}
+                  />
+                </Field>
+                <Field label="Contraseña admin">
+                  <input
+                    type="password"
+                    className="w-full rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+                    value={adminPass}
+                    onChange={(e) => setAdminPass(e.target.value)}
+                  />
+                </Field>
+              </div>
+              <div className="text-xs text-slate-400 mt-2">
+                Esto NO es seguridad real (porque es front-end). Luego lo hacemos con Firebase Auth.
+              </div>
+            </div>
+
+            <button
+              onClick={onSave}
+              className="w-full rounded-2xl bg-blue-600 hover:bg-blue-700 transition px-4 py-3 font-black"
+            >
+              Guardar configuración
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-800 bg-slate-900/20 p-6">
+          <div className="font-black text-lg mb-4">Materias</div>
+
+          <div className="flex gap-2">
+            <input
+              className="flex-1 rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+              value={newSubjectName}
+              onChange={(e) => setNewSubjectName(e.target.value)}
+              placeholder="Ej. Cálculo Integral"
+            />
+            <button
+              onClick={addSubject}
+              className="rounded-2xl px-4 py-3 bg-white text-slate-900 font-black hover:opacity-90 transition inline-flex items-center gap-2"
+            >
+              <Plus size={18} />
+              Agregar
+            </button>
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {subjects.map((s) => (
+              <div
+                key={s.id}
+                className="rounded-2xl border border-slate-800 bg-slate-950/20 p-4 flex items-center justify-between gap-4"
+              >
+                <div className="min-w-0">
+                  <div className="font-bold truncate">{s.name}</div>
+                  <div className="text-xs text-slate-400">ID: {s.id}</div>
+                </div>
+                <button
+                  onClick={() => removeSubject(s.id)}
+                  className="h-10 w-10 rounded-2xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition flex items-center justify-center"
+                  title="Eliminar materia"
+                >
+                  <Trash2 size={16} className="text-red-200" />
+                </button>
+              </div>
+            ))}
+
+            {subjects.length === 0 && (
+              <div className="text-slate-400 text-sm p-6 text-center border border-dashed border-slate-800 rounded-2xl">
+                No hay materias. Agrega una.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <div className="text-sm font-bold text-slate-300 mb-2">{label}</div>
+      {children}
+    </div>
+  );
+}

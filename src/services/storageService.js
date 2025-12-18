@@ -1,24 +1,25 @@
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { storage } from "../firebase";
+// src/services/storageService.js
+// Firebase Storage uploader (producción)
+
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { app } from "../firebase"; // ✅ RUTA CORRECTA
+
+const storage = getStorage(app);
 
 /**
- * Sube un archivo a Firebase Storage y devuelve su URL pública
+ * Sube un archivo a Firebase Storage y regresa su downloadURL
  * @param {File} file
  * @param {string} subjectId
  * @param {string} category
- * @returns {Promise<string>}
  */
 export async function uploadFile(file, subjectId, category) {
-  try {
-    const path = `subjects/${subjectId}/${category}/${Date.now()}_${file.name}`;
-    const storageRef = ref(storage, path);
+  if (!file) throw new Error("No file provided");
 
-    await uploadBytes(storageRef, file);
-    const downloadURL = await getDownloadURL(storageRef);
+  const path = `academicHub/${subjectId}/${category}/${Date.now()}_${file.name}`;
+  const fileRef = ref(storage, path);
 
-    return downloadURL;
-  } catch (error) {
-    console.error("Error uploading file to Firebase Storage:", error);
-    throw error;
-  }
+  await uploadBytes(fileRef, file);
+  const downloadURL = await getDownloadURL(fileRef);
+
+  return downloadURL;
 }

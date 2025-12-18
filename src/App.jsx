@@ -1,3 +1,5 @@
+import { uploadFile } from "./services/storageService";
+import { useState } from "react";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   HashRouter,
@@ -579,7 +581,11 @@ function Subject({ cfg, meta, setMeta, query }) {
           onClose={() => setUploadOpen(false)}
           onUpload={async (file) => {
             const id = uid("file");
-            await idbPut(id, file);
+            // 🔥 Subir archivo a Firebase Storage
+const downloadURL = await uploadFile(file, subject.id, tab);
+
+// 💾 Respaldo local (se mantiene)
+await idbPut(id, file);
 
             const metaItem = {
               id,
@@ -588,7 +594,8 @@ function Subject({ cfg, meta, setMeta, query }) {
               name: file.name,
               size: file.size,
               mime: file.type || "application/octet-stream",
-              uploadedAt: todayISO()
+              uploadedAt: todayISO(),
+              downloadURL
             };
 
             setMeta((prev) => [metaItem, ...prev]);

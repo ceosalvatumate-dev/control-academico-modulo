@@ -80,28 +80,27 @@ function RequireAuth({ children }) {
 // -------------------------
 export default function App() {
   const [user, setUser] = useState(null);
-const [authLoading, setAuthLoading] = useState(true);
-  
+  const [authLoading, setAuthLoading] = useState(true);
+
   useEffect(() => {
-  const unsub = onAuthStateChanged(auth, (firebaseUser) => {
-    if (firebaseUser) {
-      setUser(firebaseUser);
-    } else {
-      setUser(null);
-    }
-    setAuthLoading(false);
-  });
-    
-  return () => unsub();
-}, []);
+    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser || null);
+      setAuthLoading(false);
+    });
+
+    return () => unsub();
+  }, []);
+
   window.__firebaseUser = user;
+
   if (authLoading) {
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white">
-      Cargando sesión...
-    </div>
-  );
-}
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white">
+        Cargando sesión...
+      </div>
+    );
+  }
+
   return (
     <HashRouter>
       <Routes>
@@ -135,7 +134,7 @@ function Login() {
       await signInWithEmailAndPassword(auth, email, password);
       nav("/app");
     } catch (err) {
-      setError(err.message);
+      setError(err?.message || "Error al iniciar sesión");
     }
   };
 
@@ -144,7 +143,7 @@ function Login() {
       await signInWithPopup(auth, googleProvider);
       nav("/app");
     } catch (err) {
-      setError(err.message);
+      setError(err?.message || "Error al iniciar sesión con Google");
     }
   };
 
@@ -188,14 +187,13 @@ function Login() {
         >
           Entrar con Google
         </button>
-            </form>
+      </form>
     </div>
   );
 }
-}
 
 // -------------------------
-// Shell (layout) 
+// Shell (layout)
 // -------------------------
 function Shell() {
   const [cfg, setCfg] = useState(() => loadConfig());
@@ -209,10 +207,9 @@ function Shell() {
   const subjects = cfg.subjects || [];
 
   const onLogout = async () => {
-  await signOut(auth);
-  window.__firebaseUser = null;
-  window.location.hash = "#/login";
-};
+    await signOut(auth);
+    window.__firebaseUser = null;
+    window.location.hash = "#/login";
   };
 
   // notifications (demo útil): conteo por “tareas” sin descargar
@@ -238,11 +235,12 @@ function Shell() {
           />
 
           <div className="p-6 md:p-8">
+            {/* IMPORTANT: RUTAS RELATIVAS (porque Shell vive en /app/*) */}
             <Routes>
-              <Route path="/" element={<Dashboard cfg={cfg} meta={meta} />} />
+              <Route index element={<Dashboard cfg={cfg} meta={meta} />} />
 
               <Route
-                path="/subject/:id"
+                path="subject/:id"
                 element={
                   <Subject
                     cfg={cfg}
@@ -254,21 +252,15 @@ function Shell() {
               />
 
               <Route
-                path="/archives"
+                path="archives"
                 element={
                   <Archives cfg={cfg} meta={meta} setMeta={setMeta} query={query} />
                 }
               />
 
               <Route
-                path="/settings"
-                element={
-                  <SettingsPage
-                    cfg={cfg}
-                    setCfg={setCfg}
-                    subjects={subjects}
-                  />
-                }
+                path="settings"
+                element={<SettingsPage cfg={cfg} setCfg={setCfg} subjects={subjects} />}
               />
 
               <Route path="*" element={<Navigate to="/app" replace />} />
@@ -489,7 +481,10 @@ function Dashboard({ cfg, meta }) {
         <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
           <StatCard label="Materias" value={`${subjects.length}`} />
           <StatCard label="Archivos totales" value={`${meta.length}`} />
-          <StatCard label="Última subida" value={meta[0]?.uploadedAt ? new Date(meta[0].uploadedAt).toLocaleString() : "—"} />
+          <StatCard
+            label="Última subida"
+            value={meta[0]?.uploadedAt ? new Date(meta[0].uploadedAt).toLocaleString() : "—"}
+          />
         </div>
       </div>
     </div>
@@ -556,7 +551,7 @@ function Subject({ cfg, meta, setMeta, query }) {
             onClick={() => setUploadOpen(true)}
             className="shrink-0 inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-white text-slate-900 font-bold hover:opacity-90 transition"
           >
-            <CloudUpload size={18} />
+            <Upload size={18} />
             Subir nuevo archivo
           </button>
         </div>
@@ -574,10 +569,14 @@ function Subject({ cfg, meta, setMeta, query }) {
 
         <div className="space-y-3">
           {filtered.map((f) => (
-            <FileRow key={f.id} fileMeta={f} onDelete={async () => {
-              await idbDel(f.id);
-              setMeta((prev) => prev.filter((x) => x.id !== f.id));
-            }} />
+            <FileRow
+              key={f.id}
+              fileMeta={f}
+              onDelete={async () => {
+                await idbDel(f.id);
+                setMeta((prev) => prev.filter((x) => x.id !== f.id));
+              }}
+            />
           ))}
 
           {filtered.length === 0 && (
@@ -594,15 +593,16 @@ function Subject({ cfg, meta, setMeta, query }) {
           tab={tab}
           onClose={() => setUploadOpen(false)}
           onUpload={async (file) => {
-            const id = uid("file");
-            // 🔥 Subir archivo a Firebase Storage
-const downloadURL = await uploadFile(file, subject.id, tab);
+            const fid = uid("file");
 
-// 💾 Respaldo local (se mantiene)
-await idbPut(id, file);
+            // 🔥 Subir archivo a Firebase Storage
+            const downloadURL = await uploadFile(file, subject.id, tab);
+
+            // 💾 Respaldo local (se mantiene)
+            await idbPut(fid, file);
 
             const metaItem = {
-              id,
+              id: fid,
               subjectId: subject.id,
               category: tab,
               name: file.name,
@@ -624,7 +624,7 @@ await idbPut(id, file);
 function Tabs({ tab, setTab }) {
   return (
     <div className="flex flex-wrap gap-2">
-      {CATEGORIES.filter(c => c.key !== "archives").map((t) => {
+      {CATEGORIES.filter((c) => c.key !== "archives").map((t) => {
         const active = tab === t.key;
         const Icon = t.icon;
         return (
@@ -649,7 +649,7 @@ function Tabs({ tab, setTab }) {
 function FileRow({ fileMeta, onDelete }) {
   const [downloading, setDownloading] = useState(false);
 
-  const isImage = fileMeta.mime.startsWith("image/");
+  const isImage = (fileMeta.mime || "").startsWith("image/");
   const Icon = isImage ? ImageIcon : FileText;
 
   const onDownload = async () => {
@@ -681,7 +681,8 @@ function FileRow({ fileMeta, onDelete }) {
         <div className="min-w-0">
           <div className="font-bold truncate">{fileMeta.name}</div>
           <div className="text-xs text-slate-400">
-            {formatBytes(fileMeta.size)} • {new Date(fileMeta.uploadedAt).toLocaleString()}
+            {formatBytes(fileMeta.size)} •{" "}
+            {fileMeta.uploadedAt ? new Date(fileMeta.uploadedAt).toLocaleString() : "—"}
           </div>
         </div>
       </div>
@@ -746,7 +747,9 @@ function UploadModal({ subject, tab, onClose, onUpload }) {
             disabled={!file}
             onClick={() => file && onUpload(file)}
             className={`w-full rounded-2xl px-4 py-3 font-black transition inline-flex items-center justify-center gap-2 ${
-              file ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-800 text-slate-400 cursor-not-allowed"
+              file
+                ? "bg-blue-600 hover:bg-blue-700"
+                : "bg-slate-800 text-slate-400 cursor-not-allowed"
             }`}
           >
             <Plus size={18} />
@@ -824,7 +827,8 @@ function Archives({ cfg, meta, setMeta, query }) {
               <div className="min-w-0">
                 <div className="font-bold truncate">{f.name}</div>
                 <div className="text-xs text-slate-400">
-                  {subjectName(f.subjectId)} • {formatBytes(f.size)} • {new Date(f.uploadedAt).toLocaleString()}
+                  {subjectName(f.subjectId)} • {formatBytes(f.size)} •{" "}
+                  {f.uploadedAt ? new Date(f.uploadedAt).toLocaleString() : "—"}
                 </div>
               </div>
 
@@ -890,7 +894,10 @@ function SettingsPage({ cfg, setCfg }) {
       ...cfg,
       academyName: academyName.trim() || "Academia",
       logoUrl: logoUrl.trim(),
-      admin: { email: adminEmail.trim() || "admin@academia.com", password: adminPass || "admin123" },
+      admin: {
+        email: adminEmail.trim() || "admin@academia.com",
+        password: adminPass || "admin123"
+      },
       subjects
     };
     saveConfig(next);
@@ -917,7 +924,7 @@ function SettingsPage({ cfg, setCfg }) {
   };
 
   const removeSubject = (id) => {
-    if (!confirm("¿Eliminar materia? (No borra archivos locales automáticamente)")) return;
+    if (!window.confirm("¿Eliminar materia? (No borra archivos locales automáticamente)")) return;
     setSubjects((prev) => prev.filter((s) => s.id !== id));
   };
 
@@ -1047,4 +1054,101 @@ function Field({ label, children }) {
       {children}
     </div>
   );
+}
+
+// -------------------------
+// Helpers: localStorage + IndexedDB
+// -------------------------
+const LS_CFG = "control_academico_cfg_v1";
+const LS_META = "control_academico_meta_v1";
+
+function loadConfig() {
+  try {
+    const raw = localStorage.getItem(LS_CFG);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {
+    academyName: "Academia",
+    logoUrl: "",
+    admin: { email: "admin@academia.com", password: "admin123" },
+    subjects: []
+  };
+}
+
+function saveConfig(cfg) {
+  localStorage.setItem(LS_CFG, JSON.stringify(cfg));
+}
+
+function loadMeta() {
+  try {
+    const raw = localStorage.getItem(LS_META);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return [];
+}
+
+function saveMeta(meta) {
+  localStorage.setItem(LS_META, JSON.stringify(meta));
+}
+
+function uid(prefix = "id") {
+  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+}
+
+function todayISO() {
+  return new Date().toISOString();
+}
+
+function formatBytes(bytes = 0) {
+  if (!bytes) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1)} ${sizes[i]}`;
+}
+
+// IndexedDB minimal (store: files)
+const DB_NAME = "control_academico_db";
+const STORE = "files";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbPut(key, value) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(value, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbDel(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
 }

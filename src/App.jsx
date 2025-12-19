@@ -264,9 +264,11 @@ function Shell() {
 
   const subjects = cfg.subjects || [];
 
-  const onLogout = () => {
-    clearSession();
-    window.location.hash = "#/login";
+  const onLogout = async () => {
+  await signOut(auth);
+  window.__firebaseUser = null;
+  window.location.hash = "#/login";
+};
   };
 
   // notifications (demo útil): conteo por “tareas” sin descargar

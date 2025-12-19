@@ -1,5 +1,5 @@
-import { uploadFile } from "./services/storageService";
 import React, { useEffect, useMemo, useState } from "react";
+
 import {
   HashRouter,
   Routes,
@@ -10,6 +10,16 @@ import {
   useNavigate,
   useParams
 } from "react-router-dom";
+
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut
+} from "firebase/auth";
+
+import { auth, googleProvider } from "./firebase";
+import { uploadFile } from "./services/storageService";
 
 import {
   Bell,
@@ -31,23 +41,6 @@ import {
   FlaskConical,
   Code2
 } from "lucide-react";
-
-import {
-  clearSession,
-  defaultConfig,
-  formatBytes,
-  getSession,
-  idbDel,
-  idbGet,
-  idbPut,
-  loadConfig,
-  loadMeta,
-  saveConfig,
-  saveMeta,
-  setSession,
-  todayISO,
-  uid
-} from "./storage";
 
 // -------------------------
 // Categorías “carpetas”

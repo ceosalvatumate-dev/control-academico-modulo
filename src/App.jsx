@@ -18,8 +18,19 @@ import {
   signOut
 } from "firebase/auth";
 
-import { auth, googleProvider } from "./firebase";
+// IMPORTANTE: Asegúrate de tener storage importado para borrar archivos físicos si deseas
+import { auth, googleProvider, storage } from "./firebase";
 import { uploadFile } from "./services/storageService";
+import { 
+  getUserConfig, 
+  saveUserConfig, 
+  listenUserFiles, 
+  addUserFile, 
+  deleteUserFile 
+} from "./services/firestoreService";
+
+// Para borrar físicamente de Storage (opcional pero recomendado)
+import { ref, deleteObject } from "firebase/storage";
 
 import {
   Bell,
@@ -63,12 +74,12 @@ function iconForSubjectName(name) {
 }
 
 // -------------------------
-// Auth Guard (LOCAL)
+// Auth Guard
 // -------------------------
-function RequireAuth({ children }) {
+function RequireAuth({ children, user }) {
   const loc = useLocation();
 
-  if (!window.__firebaseUser) {
+  if (!user) {
     return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
   }
 
@@ -87,11 +98,8 @@ export default function App() {
       setUser(firebaseUser || null);
       setAuthLoading(false);
     });
-
     return () => unsub();
   }, []);
-
-  window.__firebaseUser = user;
 
   if (authLoading) {
     return (
@@ -108,8 +116,9 @@ export default function App() {
         <Route
           path="/app/*"
           element={
-            <RequireAuth>
-              <Shell />
+            <RequireAuth user={user}>
+              {/* Pasamos user como prop para que Shell tenga el UID inmediatamente */}
+              <Shell user={user} />
             </RequireAuth>
           }
         />
@@ -120,7 +129,7 @@ export default function App() {
 }
 
 // -------------------------
-// Login (LOCAL)
+// Login
 // -------------------------
 function Login() {
   const nav = useNavigate();
@@ -193,30 +202,69 @@ function Login() {
 }
 
 // -------------------------
-// Shell (layout)
+// Shell (layout + Data Fetching)
 // -------------------------
-function Shell() {
-  const [cfg, setCfg] = useState(() => loadConfig());
-  const [meta, setMeta] = useState(() => loadMeta());
+function Shell({ user }) {
+  // Estado inicial vacío, se llena desde Firestore
+  const [cfg, setCfg] = useState({ subjects: [], academyName: "Cargando..." });
+  const [meta, setMeta] = useState([]);
+  
   const [query, setQuery] = useState("");
   const [notifOpen, setNotifOpen] = useState(false);
 
-  useEffect(() => setCfg(loadConfig()), []);
-  useEffect(() => saveMeta(meta), [meta]);
+  // 1. Cargar Configuración inicial
+  useEffect(() => {
+    if (!user?.uid) return;
+    getUserConfig(user.uid).then((config) => {
+      setCfg(config);
+    });
+  }, [user]);
+
+  // 2. Suscripción en tiempo real a Archivos (Firestore)
+  useEffect(() => {
+    if (!user?.uid) return;
+    const unsubscribe = listenUserFiles(user.uid, (files) => {
+      setMeta(files);
+    });
+    return () => unsubscribe();
+  }, [user]);
 
   const subjects = cfg.subjects || [];
 
   const onLogout = async () => {
     await signOut(auth);
-    window.__firebaseUser = null;
     window.location.hash = "#/login";
   };
 
-  // notifications (demo útil): conteo por “tareas” sin descargar
   const notifCount = useMemo(() => {
     const tasks = meta.filter((m) => m.category === "tasks");
     return tasks.length;
   }, [meta]);
+
+  // Handler centralizado para borrar archivos (Firestore + Storage opcional)
+  const handleDeleteFile = async (fileMeta) => {
+    if (!user?.uid) return;
+    try {
+      // 1. Borrar metadata de Firestore
+      await deleteUserFile(user.uid, fileMeta.id);
+
+      // 2. Intentar borrar de Storage (si existe la referencia)
+      // Si usaste la ruta default en storageService, intenta reconstruirla o 
+      // guarda la ruta completa en metadata. Aquí asumimos un intento 'best effort'.
+      // Si tienes la ruta en fileMeta.storagePath es ideal. Si no, solo borramos el doc.
+      if (fileMeta.downloadURL) {
+         try {
+            const fileRef = ref(storage, fileMeta.downloadURL);
+            await deleteObject(fileRef);
+         } catch (e) {
+            console.warn("No se pudo borrar físico (posiblemente ya no existe o permisos):", e);
+         }
+      }
+    } catch (error) {
+      console.error("Error eliminando archivo:", error);
+      alert("Error eliminando archivo.");
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -235,7 +283,6 @@ function Shell() {
           />
 
           <div className="p-6 md:p-8">
-            {/* IMPORTANT: RUTAS RELATIVAS (porque Shell vive en /app/*) */}
             <Routes>
               <Route index element={<Dashboard cfg={cfg} meta={meta} />} />
 
@@ -243,10 +290,11 @@ function Shell() {
                 path="subject/:id"
                 element={
                   <Subject
+                    user={user}
                     cfg={cfg}
                     meta={meta}
-                    setMeta={setMeta}
                     query={query}
+                    onDeleteFile={handleDeleteFile}
                   />
                 }
               />
@@ -254,13 +302,24 @@ function Shell() {
               <Route
                 path="archives"
                 element={
-                  <Archives cfg={cfg} meta={meta} setMeta={setMeta} query={query} />
+                  <Archives 
+                    cfg={cfg} 
+                    meta={meta} 
+                    query={query} 
+                    onDeleteFile={handleDeleteFile}
+                  />
                 }
               />
 
               <Route
                 path="settings"
-                element={<SettingsPage cfg={cfg} setCfg={setCfg} subjects={subjects} />}
+                element={
+                  <SettingsPage 
+                    user={user}
+                    cfg={cfg} 
+                    setCfg={setCfg} 
+                  />
+                }
               />
 
               <Route path="*" element={<Navigate to="/app" replace />} />
@@ -288,8 +347,8 @@ function Sidebar({ cfg }) {
             <BookOpen className="text-blue-300" size={20} />
           </div>
           <div>
-            <div className="font-bold leading-tight">{cfg.academyName}</div>
-            <div className="text-xs text-slate-400">Repositorio</div>
+            <div className="font-bold leading-tight truncate w-32">{cfg.academyName}</div>
+            <div className="text-xs text-slate-400">Repositorio Cloud</div>
           </div>
         </div>
       </div>
@@ -333,10 +392,13 @@ function Sidebar({ cfg }) {
                   }`}
                 >
                   <Icon size={18} className={active ? "text-blue-300" : "text-slate-300"} />
-                  <span className="font-semibold">{s.name}</span>
+                  <span className="font-semibold truncate">{s.name}</span>
                 </Link>
               );
             })}
+            {subjects.length === 0 && (
+              <div className="px-4 py-2 text-xs text-slate-500">Sin materias configuradas.</div>
+            )}
           </div>
         </div>
 
@@ -372,7 +434,7 @@ function Sidebar({ cfg }) {
       </nav>
 
       <div className="p-4 border-t border-slate-800 text-xs text-slate-500">
-        Guardado local (por navegador) • luego migramos a Firebase
+        Sincronizado con Firebase Firestore
       </div>
     </aside>
   );
@@ -458,14 +520,14 @@ function Dashboard({ cfg, meta }) {
         <div className="flex items-start justify-between gap-6">
           <div>
             <div className="inline-flex items-center gap-2 text-xs font-bold px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-200">
-              ● Repositorio activo
+              ● Cloud Activo
             </div>
             <div className="mt-3 text-3xl md:text-4xl font-black">
               Panel principal
             </div>
             <p className="mt-2 text-slate-300 max-w-2xl">
-              Organiza tus archivos por materia y por carpeta (tareas, exámenes, ETS, libros, etc.).
-              Por ahora todo se guarda en tu navegador (local) y luego lo migramos a Firebase.
+              Organiza tus archivos por materia y carpeta. Todos tus datos se guardan
+              seguros en Firebase y están disponibles en todos tus dispositivos.
             </p>
           </div>
 
@@ -501,9 +563,9 @@ function StatCard({ label, value }) {
 }
 
 // -------------------------
-// Subject Page (tabs + upload + listas)
+// Subject Page
 // -------------------------
-function Subject({ cfg, meta, setMeta, query }) {
+function Subject({ user, cfg, meta, query, onDeleteFile }) {
   const { id } = useParams();
   const subject = (cfg.subjects || []).find((s) => s.id === id);
   const [tab, setTab] = useState("tasks");
@@ -516,7 +578,7 @@ function Subject({ cfg, meta, setMeta, query }) {
   if (!subject) {
     return (
       <div className="rounded-2xl border border-slate-800 bg-slate-900/30 p-6">
-        Materia no encontrada. Ve a configuración.
+        Materia no encontrada. Ve a configuración para agregarla.
       </div>
     );
   }
@@ -526,7 +588,12 @@ function Subject({ cfg, meta, setMeta, query }) {
     return meta
       .filter((m) => m.subjectId === subject.id && m.category === tab)
       .filter((m) => !q || (m.name || "").toLowerCase().includes(q))
-      .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+      // Ordenar por fecha desc (las fechas de firestore a veces son timestamps, aquí usamos ISO string o Time)
+      .sort((a, b) => {
+        const dA = new Date(a.uploadedAt || 0);
+        const dB = new Date(b.uploadedAt || 0);
+        return dB - dA;
+      });
   }, [meta, subject.id, tab, query]);
 
   return (
@@ -538,12 +605,12 @@ function Subject({ cfg, meta, setMeta, query }) {
       <div className="rounded-3xl border border-slate-800 bg-slate-900/30 p-6 md:p-8 shadow-soft">
         <div className="flex items-start justify-between gap-6">
           <div>
-            <div className="inline-flex items-center gap-2 text-xs font-bold px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-200">
-              ● Curso activo
+            <div className="inline-flex items-center gap-2 text-xs font-bold px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-200">
+              ● Sincronizado
             </div>
             <div className="mt-3 text-4xl font-black">{subject.name}</div>
             <p className="mt-2 text-slate-300 max-w-2xl">
-              Sube archivos y organízalos por carpeta. Los botones de tabs y sidebar ya son reales.
+              Sube archivos a la nube y organízalos por categorías.
             </p>
           </div>
 
@@ -572,10 +639,7 @@ function Subject({ cfg, meta, setMeta, query }) {
             <FileRow
               key={f.id}
               fileMeta={f}
-              onDelete={async () => {
-                await idbDel(f.id);
-                setMeta((prev) => prev.filter((x) => x.id !== f.id));
-              }}
+              onDelete={() => onDeleteFile(f)}
             />
           ))}
 
@@ -594,13 +658,11 @@ function Subject({ cfg, meta, setMeta, query }) {
           onClose={() => setUploadOpen(false)}
           onUpload={async (file) => {
             const fid = uid("file");
-
-            // 🔥 Subir archivo a Firebase Storage
+            
+            // 1. Subir a Firebase Storage
             const downloadURL = await uploadFile(file, subject.id, tab);
 
-            // 💾 Respaldo local (se mantiene)
-            await idbPut(fid, file);
-
+            // 2. Guardar Metadata en Firestore
             const metaItem = {
               id: fid,
               subjectId: subject.id,
@@ -608,11 +670,14 @@ function Subject({ cfg, meta, setMeta, query }) {
               name: file.name,
               size: file.size,
               mime: file.type || "application/octet-stream",
-              uploadedAt: todayISO(),
-              downloadURL
+              uploadedAt: new Date().toISOString(),
+              downloadURL,
+              ownerUid: user.uid
             };
-
-            setMeta((prev) => [metaItem, ...prev]);
+            
+            await addUserFile(user.uid, metaItem);
+            
+            // UI actualiza automáticamente por onSnapshot en Shell
             setUploadOpen(false);
           }}
         />
@@ -652,12 +717,18 @@ function FileRow({ fileMeta, onDelete }) {
   const isImage = (fileMeta.mime || "").startsWith("image/");
   const Icon = isImage ? ImageIcon : FileText;
 
+  // Descargar usando fetch para evitar problemas de CORS o abrir en pestaña
   const onDownload = async () => {
     setDownloading(true);
     try {
-      const blob = await idbGet(fileMeta.id);
-      if (!blob) return;
-
+      if (!fileMeta.downloadURL) {
+        alert("URL de archivo no disponible");
+        return;
+      }
+      
+      // Opción A: Intentar fetch para forzar descarga (mejor UX)
+      const response = await fetch(fileMeta.downloadURL);
+      const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -666,6 +737,10 @@ function FileRow({ fileMeta, onDelete }) {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+    } catch (err) {
+      console.warn("Fetch download falló, abriendo en nueva pestaña...", err);
+      // Opción B: Fallback (abrir en pestaña nueva)
+      window.open(fileMeta.downloadURL, "_blank");
     } finally {
       setDownloading(false);
     }
@@ -692,13 +767,18 @@ function FileRow({ fileMeta, onDelete }) {
           onClick={onDownload}
           className="h-10 px-3 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/70 transition inline-flex items-center gap-2 text-sm font-bold"
           title="Descargar"
+          disabled={downloading}
         >
           <Download size={16} />
           {downloading ? "…" : "Descargar"}
         </button>
 
         <button
-          onClick={onDelete}
+          onClick={() => {
+             if(window.confirm("¿Estás seguro de eliminar este archivo permanentemente?")) {
+               onDelete();
+             }
+          }}
           className="h-10 w-10 rounded-2xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition flex items-center justify-center"
           title="Eliminar"
         >
@@ -715,6 +795,19 @@ function FileRow({ fileMeta, onDelete }) {
 function UploadModal({ subject, tab, onClose, onUpload }) {
   const catLabel = CATEGORIES.find((c) => c.key === tab)?.label || "Carpeta";
   const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handleUpload = async () => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      await onUpload(file);
+    } catch (e) {
+      console.error(e);
+      alert("Error subiendo archivo");
+      setUploading(false); // solo resetear si hay error, si no el padre cierra el modal
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -739,21 +832,21 @@ function UploadModal({ subject, tab, onClose, onUpload }) {
               className="block w-full text-sm text-slate-200 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:font-bold file:bg-white file:text-slate-900 hover:file:opacity-90"
             />
             <div className="text-xs text-slate-400 mt-2">
-              Se guarda localmente en tu navegador (IndexedDB). Luego lo migraremos a Firebase Storage.
+              Se subirá a Firebase Storage y la referencia a Firestore.
             </div>
           </div>
 
           <button
-            disabled={!file}
-            onClick={() => file && onUpload(file)}
+            disabled={!file || uploading}
+            onClick={handleUpload}
             className={`w-full rounded-2xl px-4 py-3 font-black transition inline-flex items-center justify-center gap-2 ${
-              file
+              file && !uploading
                 ? "bg-blue-600 hover:bg-blue-700"
                 : "bg-slate-800 text-slate-400 cursor-not-allowed"
             }`}
           >
             <Plus size={18} />
-            Guardar en esta carpeta
+            {uploading ? "Subiendo..." : "Guardar en la nube"}
           </button>
         </div>
       </div>
@@ -764,7 +857,7 @@ function UploadModal({ subject, tab, onClose, onUpload }) {
 // -------------------------
 // Archives (vista global)
 // -------------------------
-function Archives({ cfg, meta, setMeta, query }) {
+function Archives({ cfg, meta, query, onDeleteFile }) {
   const subjects = cfg.subjects || [];
   const [cat, setCat] = useState("archives");
 
@@ -785,9 +878,9 @@ function Archives({ cfg, meta, setMeta, query }) {
       </div>
 
       <div className="rounded-3xl border border-slate-800 bg-slate-900/30 p-6 shadow-soft">
-        <div className="font-black text-3xl">Archivos</div>
+        <div className="font-black text-3xl">Archivos Globales</div>
         <p className="text-slate-300 mt-2">
-          Vista global por carpeta. (Aquí también funciona el buscador.)
+          Vista global de todos tus archivos en la nube.
         </p>
 
         <div className="mt-4 flex flex-wrap gap-2">
@@ -820,50 +913,11 @@ function Archives({ cfg, meta, setMeta, query }) {
 
         <div className="space-y-3">
           {filtered.map((f) => (
-            <div
+            <FileRow
               key={f.id}
-              className="rounded-2xl border border-slate-800 bg-slate-950/20 p-4 flex items-center justify-between gap-4"
-            >
-              <div className="min-w-0">
-                <div className="font-bold truncate">{f.name}</div>
-                <div className="text-xs text-slate-400">
-                  {subjectName(f.subjectId)} • {formatBytes(f.size)} •{" "}
-                  {f.uploadedAt ? new Date(f.uploadedAt).toLocaleString() : "—"}
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={async () => {
-                    const blob = await idbGet(f.id);
-                    if (!blob) return;
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = f.name || "archivo";
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(url);
-                  }}
-                  className="h-10 px-3 rounded-2xl border border-slate-800 bg-slate-900/40 hover:bg-slate-900/70 transition inline-flex items-center gap-2 text-sm font-bold"
-                >
-                  <Download size={16} />
-                  Descargar
-                </button>
-
-                <button
-                  onClick={async () => {
-                    await idbDel(f.id);
-                    setMeta((prev) => prev.filter((x) => x.id !== f.id));
-                  }}
-                  className="h-10 w-10 rounded-2xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition flex items-center justify-center"
-                  title="Eliminar"
-                >
-                  <Trash2 size={16} className="text-red-200" />
-                </button>
-              </div>
-            </div>
+              fileMeta={f}
+              onDelete={() => onDeleteFile(f)}
+            />
           ))}
 
           {filtered.length === 0 && (
@@ -878,31 +932,35 @@ function Archives({ cfg, meta, setMeta, query }) {
 }
 
 // -------------------------
-// Settings Page (configurable)
+// Settings Page
 // -------------------------
-function SettingsPage({ cfg, setCfg }) {
-  const [academyName, setAcademyName] = useState(cfg.academyName || "");
-  const [logoUrl, setLogoUrl] = useState(cfg.logoUrl || "");
-  const [adminEmail, setAdminEmail] = useState(cfg.admin?.email || "");
-  const [adminPass, setAdminPass] = useState(cfg.admin?.password || "");
-
-  const [subjects, setSubjects] = useState(cfg.subjects || []);
+function SettingsPage({ user, cfg, setCfg }) {
+  const [academyName, setAcademyName] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  // Estado local para subjects (para edición)
+  const [subjects, setSubjects] = useState([]);
   const [newSubjectName, setNewSubjectName] = useState("");
 
-  const onSave = () => {
+  // Sincronizar form con props al cargar
+  useEffect(() => {
+    setAcademyName(cfg.academyName || "");
+    setLogoUrl(cfg.logoUrl || "");
+    setSubjects(cfg.subjects || []);
+  }, [cfg]);
+
+  const onSave = async () => {
     const next = {
       ...cfg,
       academyName: academyName.trim() || "Academia",
       logoUrl: logoUrl.trim(),
-      admin: {
-        email: adminEmail.trim() || "admin@academia.com",
-        password: adminPass || "admin123"
-      },
       subjects
     };
-    saveConfig(next);
+    
+    // Guardar en Firestore
+    await saveUserConfig(user.uid, next);
+    // Actualizar estado local (optimista o esperar a reload, aquí actualizamos directo)
     setCfg(next);
-    alert("✅ Configuración guardada.");
+    alert("✅ Configuración guardada en la nube.");
   };
 
   const addSubject = () => {
@@ -924,7 +982,7 @@ function SettingsPage({ cfg, setCfg }) {
   };
 
   const removeSubject = (id) => {
-    if (!window.confirm("¿Eliminar materia? (No borra archivos locales automáticamente)")) return;
+    if (!window.confirm("¿Eliminar materia?")) return;
     setSubjects((prev) => prev.filter((s) => s.id !== id));
   };
 
@@ -937,7 +995,7 @@ function SettingsPage({ cfg, setCfg }) {
       <div className="rounded-3xl border border-slate-800 bg-slate-900/30 p-6 shadow-soft">
         <div className="font-black text-3xl">Configuración</div>
         <p className="text-slate-300 mt-2">
-          Define el nombre de la academia, logo y materias. (Todo local por ahora).
+          Define el nombre de la academia y las materias. Se sincroniza con tu cuenta.
         </p>
       </div>
 
@@ -963,35 +1021,11 @@ function SettingsPage({ cfg, setCfg }) {
               />
             </Field>
 
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/20 p-4">
-              <div className="font-black mb-2">Login (local temporal)</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Field label="Correo admin">
-                  <input
-                    className="w-full rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
-                    value={adminEmail}
-                    onChange={(e) => setAdminEmail(e.target.value)}
-                  />
-                </Field>
-                <Field label="Contraseña admin">
-                  <input
-                    type="password"
-                    className="w-full rounded-2xl border border-slate-800 bg-slate-950/30 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
-                    value={adminPass}
-                    onChange={(e) => setAdminPass(e.target.value)}
-                  />
-                </Field>
-              </div>
-              <div className="text-xs text-slate-400 mt-2">
-                Esto NO es seguridad real (porque es front-end). Luego lo hacemos con Firebase Auth.
-              </div>
-            </div>
-
             <button
               onClick={onSave}
-              className="w-full rounded-2xl bg-blue-600 hover:bg-blue-700 transition px-4 py-3 font-black"
+              className="w-full rounded-2xl bg-blue-600 hover:bg-blue-700 transition px-4 py-3 font-black mt-4"
             >
-              Guardar configuración
+              Guardar configuración en la Nube
             </button>
           </div>
         </div>
@@ -1057,46 +1091,10 @@ function Field({ label, children }) {
 }
 
 // -------------------------
-// Helpers: localStorage + IndexedDB
+// Helpers
 // -------------------------
-const LS_CFG = "control_academico_cfg_v1";
-const LS_META = "control_academico_meta_v1";
-
-function loadConfig() {
-  try {
-    const raw = localStorage.getItem(LS_CFG);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return {
-    academyName: "Academia",
-    logoUrl: "",
-    admin: { email: "admin@academia.com", password: "admin123" },
-    subjects: []
-  };
-}
-
-function saveConfig(cfg) {
-  localStorage.setItem(LS_CFG, JSON.stringify(cfg));
-}
-
-function loadMeta() {
-  try {
-    const raw = localStorage.getItem(LS_META);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return [];
-}
-
-function saveMeta(meta) {
-  localStorage.setItem(LS_META, JSON.stringify(meta));
-}
-
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now()}`;
-}
-
-function todayISO() {
-  return new Date().toISOString();
 }
 
 function formatBytes(bytes = 0) {
@@ -1105,50 +1103,4 @@ function formatBytes(bytes = 0) {
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${(bytes / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1)} ${sizes[i]}`;
-}
-
-// IndexedDB minimal (store: files)
-const DB_NAME = "control_academico_db";
-const STORE = "files";
-
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function idbPut(key, value) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(value, key);
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function idbGet(key) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).get(key);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function idbDel(key) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(key);
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = () => reject(tx.error);
-  });
 }

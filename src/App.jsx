@@ -188,70 +188,14 @@ function Login() {
         >
           Entrar con Google
         </button>
-      </form>
+            </form>
     </div>
   );
 }
-   
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/40 shadow-soft overflow-hidden">
-        <div className="p-6 border-b border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center">
-              <BookOpen className="text-blue-300" size={18} />
-            </div>
-            <div>
-              <div className="font-bold text-lg leading-tight">{cfg.academyName}</div>
-              <div className="text-xs text-slate-400">Iniciar sesión</div>
-            </div>
-          </div>
-        </div>
-
-        <form onSubmit={onSubmit} className="p-6 space-y-4">
-          {err && (
-            <div className="rounded-xl bg-red-500/10 border border-red-500/30 text-red-200 px-4 py-3 text-sm">
-              {err}
-            </div>
-          )}
-          <div>
-            <label className="block text-sm font-bold text-slate-300 mb-2">Correo</label>
-            <input
-              className="w-full rounded-xl border border-slate-700 bg-slate-950/40 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="admin@academia.com"
-              autoComplete="email"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-bold text-slate-300 mb-2">Contraseña</label>
-            <input
-              type="password"
-              className="w-full rounded-xl border border-slate-700 bg-slate-950/40 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              autoComplete="current-password"
-            />
-          </div>
-          <button className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 transition px-4 py-3 font-bold">
-            Entrar
-          </button>
-
-          <div className="text-xs text-slate-400">
-            * Login local temporal (luego migramos a Firebase Auth).
-          </div>
-        </form>
-      </div>
-    </div>
-  );
 }
 
 // -------------------------
-// Shell (layout)
+// Shell (layout) 
 // -------------------------
 function Shell() {
   const [cfg, setCfg] = useState(() => loadConfig());

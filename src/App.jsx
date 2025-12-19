@@ -13,7 +13,6 @@ import {
 } from "firebase/storage";
 
 // IMPORTAMOS DIRECTAMENTE DE FIREBASE.JS
-// (Asegurate que tu firebase.js exporte: auth, googleProvider, db, storage)
 import { auth, googleProvider, db, storage } from "./firebase";
 
 // Iconos
@@ -21,11 +20,11 @@ import {
   Bell, BookOpen, ChevronRight, Upload, Folder, LayoutDashboard, LogOut,
   Search, Settings, Trash2, Download, Plus, X, FileText, Image as ImageIcon,
   Sigma, FlaskConical, Code2, Calculator, Braces, BrainCircuit, Share2,
-  Eye, Paperclip
+  Eye, Paperclip, Link2, Copy, ArrowUp, ArrowDown, Check
 } from "lucide-react";
 
 // -------------------------
-// LOGICA DE SERVICIOS (INTEGRADA AQUÍ PARA EVITAR ERRORES)
+// LOGICA DE SERVICIOS
 // -------------------------
 
 // --- FIRESTORE ---
@@ -537,13 +536,26 @@ function UploadModal({ subject, category, categoryLabel, onClose, onSuccess }) {
 }
 
 function FileRow({ file, onDelete, onPreview }) {
+  const [copied, setCopied] = useState(false);
   const isImage = file.mime?.startsWith("image/");
   const Icon = isImage ? ImageIcon : FileText;
 
   const shareWhatsApp = () => {
-    const text = `Hola! Te comparto este archivo de ${file.name}: ${file.downloadURL}`;
+    // IMPORTANTE: WhatsApp Web NO permite adjuntar archivos desde web. 
+    // Solo podemos enviar el LINK público del archivo.
+    const text = `Hola! Aquí tienes el archivo "${file.name}": ${file.downloadURL}`;
     const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
     window.open(url, "_blank");
+  };
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(file.downloadURL);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Error copiando", err);
+    }
   };
 
   return (
@@ -563,7 +575,12 @@ function FileRow({ file, onDelete, onPreview }) {
         </div>
       </div>
       <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={shareWhatsApp} className="p-2 rounded-lg bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366]/20 transition"><Share2 size={18} /></button>
+        <button onClick={copyLink} className="p-2 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition" title="Copiar Enlace Público">
+          {copied ? <Check size={18} /> : <Link2 size={18} />}
+        </button>
+        <button onClick={shareWhatsApp} className="p-2 rounded-lg bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366]/20 transition" title="Enviar enlace por WhatsApp">
+          <Share2 size={18} />
+        </button>
         <button onClick={onPreview} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"><Eye size={18} /></button>
         <button onClick={() => window.open(file.downloadURL, "_blank")} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"><Download size={18} /></button>
         <button onClick={() => window.confirm("¿Borrar archivo?") && onDelete()} className="p-2 rounded-lg hover:bg-red-500/20 text-slate-500 hover:text-red-400 transition"><Trash2 size={18} /></button>
@@ -652,6 +669,19 @@ function SettingsPage({ user, cfg, setCfg }) {
     setNewCat({ label: "", icon: "Folder" });
   };
 
+  // Función para mover elementos en el array (reordenar)
+  const moveItem = (index, direction, list, setList) => {
+    const newList = [...list];
+    if (direction === "up") {
+      if (index === 0) return;
+      [newList[index - 1], newList[index]] = [newList[index], newList[index - 1]];
+    } else {
+      if (index === newList.length - 1) return;
+      [newList[index + 1], newList[index]] = [newList[index], newList[index + 1]];
+    }
+    setList(newList);
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-8 pb-10">
       <div className="flex items-center justify-between">
@@ -673,24 +703,48 @@ function SettingsPage({ user, cfg, setCfg }) {
           )}
           {activeTab === "subjects" && (
             <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
-              <h3 className="font-bold text-xl mb-4">Materias</h3>
+              <h3 className="font-bold text-xl mb-4">Materias (Orden del Sidebar)</h3>
               <div className="flex gap-2 mb-6 p-4 bg-slate-950 rounded-2xl border border-slate-800">
                 <input placeholder="Nueva materia..." className="w-full bg-transparent outline-none text-sm" value={newSubj.name} onChange={e => setNewSubj({...newSubj, name: e.target.value})} />
                 <select className="bg-slate-900 text-xs border border-slate-700 rounded-lg outline-none px-2" value={newSubj.icon} onChange={e => setNewSubj({...newSubj, icon: e.target.value})}>{iconOptions.map(i => <option key={i} value={i}>{i}</option>)}</select>
                 <button onClick={handleAddSubject} className="bg-blue-600 px-3 py-1 rounded-lg font-bold text-xs">Agregar</button>
               </div>
-              <div className="space-y-2">{subjects.map(s => <div key={s.id} className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800"><span className="font-bold">{s.name}</span><button onClick={() => setSubjects(subjects.filter(x => x.id !== s.id))} className="text-red-400"><Trash2 size={16}/></button></div>)}</div>
+              <div className="space-y-2">
+                {subjects.map((s, idx) => (
+                  <div key={s.id} className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800">
+                    <span className="font-bold">{s.name}</span>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => moveItem(idx, "up", subjects, setSubjects)} disabled={idx === 0} className="p-1 text-slate-500 hover:text-white disabled:opacity-30"><ArrowUp size={16}/></button>
+                      <button onClick={() => moveItem(idx, "down", subjects, setSubjects)} disabled={idx === subjects.length - 1} className="p-1 text-slate-500 hover:text-white disabled:opacity-30"><ArrowDown size={16}/></button>
+                      <div className="w-px h-4 bg-slate-800 mx-1"></div>
+                      <button onClick={() => setSubjects(subjects.filter(x => x.id !== s.id))} className="text-red-400 hover:text-red-300"><Trash2 size={16}/></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
           )}
           {activeTab === "categories" && (
              <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
-               <h3 className="font-bold text-xl mb-4">Carpetas (Tabs)</h3>
+               <h3 className="font-bold text-xl mb-4">Carpetas (Orden de Tabs)</h3>
                <div className="flex gap-2 mb-6 p-4 bg-slate-950 rounded-2xl border border-slate-800">
                 <input placeholder="Nueva carpeta..." className="w-full bg-transparent outline-none text-sm" value={newCat.label} onChange={e => setNewCat({...newCat, label: e.target.value})} />
                 <select className="bg-slate-900 text-xs border border-slate-700 rounded-lg outline-none px-2" value={newCat.icon} onChange={e => setNewCat({...newCat, icon: e.target.value})}>{iconOptions.map(i => <option key={i} value={i}>{i}</option>)}</select>
                 <button onClick={handleAddCategory} className="bg-emerald-600 px-3 py-1 rounded-lg font-bold text-xs">Agregar</button>
               </div>
-              <div className="space-y-2">{categories.map(c => <div key={c.key} className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800"><span className="font-medium">{c.label}</span><button onClick={() => setCategories(categories.filter(x => x.key !== c.key))} className="text-red-400"><Trash2 size={16}/></button></div>)}</div>
+              <div className="space-y-2">
+                {categories.map((c, idx) => (
+                  <div key={c.key} className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800">
+                    <span className="font-medium">{c.label}</span>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => moveItem(idx, "up", categories, setCategories)} disabled={idx === 0} className="p-1 text-slate-500 hover:text-white disabled:opacity-30"><ArrowUp size={16}/></button>
+                      <button onClick={() => moveItem(idx, "down", categories, setCategories)} disabled={idx === categories.length - 1} className="p-1 text-slate-500 hover:text-white disabled:opacity-30"><ArrowDown size={16}/></button>
+                      <div className="w-px h-4 bg-slate-800 mx-1"></div>
+                      <button onClick={() => setCategories(categories.filter(x => x.key !== c.key))} className="text-red-400 hover:text-red-300"><Trash2 size={16}/></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
              </section>
           )}
         </div>

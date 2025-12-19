@@ -1,21 +1,25 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-// IMPORTANTE: Agregar esta línea de importación
 import { getStorage } from "firebase/storage"; 
 
-// Tu configuración de Firebase (NO LA BORRES, deja la que ya tenías con tus apiKeys)
-// Si no tienes tu config a la mano, copiala de tu archivo anterior.
-// const firebaseConfig = { ... }; 
+// Tu configuración exacta (NO MODIFICAR)
+const firebaseConfig = {
+  apiKey: "AIzaSyAiDO7WlA_42qNlTMOWaQL5t3yN41pPwHI",
+  authDomain: "repositorio-salva-tu-mate-am.firebaseapp.com",
+  projectId: "repositorio-salva-tu-mate-am",
+  storageBucket: "repositorio-salva-tu-mate-am.firebasestorage.app",
+  messagingSenderId: "838491712528",
+  appId: "1:838491712528:web:e4e7b01e5073dc17266e95"
+};
 
-// Si ya tienes la variable app inicializada:
-// export const app = initializeApp(firebaseConfig);
+// Inicializar la app
+const app = initializeApp(firebaseConfig);
 
-// --- ESTO ES LO QUE TE FALTA SEGURO ---
+// Inicializar y EXPORTAR los servicios (Esto es lo que faltaba)
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 export const db = getFirestore(app);
+export const storage = getStorage(app); // Indispensable para subir archivos
 
-// ¡¡ESTA ES LA LÍNEA CLAVE QUE FALTA!!
-// Sin esto, la app se rompe porque storageService la busca y no la encuentra.
-export const storage = getStorage(app);
+export default app;

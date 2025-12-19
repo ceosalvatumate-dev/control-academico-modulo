@@ -76,6 +76,28 @@ function RequireAuth({ children }) {
 // App Root
 // -------------------------
 export default function App() {
+  const [user, setUser] = useState(null);
+const [authLoading, setAuthLoading] = useState(true);
+  
+  useEffect(() => {
+  const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+    if (firebaseUser) {
+      setUser(firebaseUser);
+    } else {
+      setUser(null);
+    }
+    setAuthLoading(false);
+  });
+    
+  return () => unsub();
+}, []);
+  if (authLoading) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white">
+      Cargando sesión...
+    </div>
+  );
+}
   return (
     <HashRouter>
       <Routes>

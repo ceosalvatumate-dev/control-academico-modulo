@@ -15,7 +15,7 @@ import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   signInWithPopup,
-  signOut,onAuthStateChanged
+  signOut
 } from "firebase/auth";
 
 import { auth, googleProvider } from "./firebase";

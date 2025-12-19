@@ -1,24 +1,21 @@
-// src/firebase.js
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+// IMPORTANTE: Agregar esta línea de importación
+import { getStorage } from "firebase/storage"; 
 
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+// Tu configuración de Firebase (NO LA BORRES, deja la que ya tenías con tus apiKeys)
+// Si no tienes tu config a la mano, copiala de tu archivo anterior.
+// const firebaseConfig = { ... }; 
 
-  // ✅ necesarias/recomendadas para Storage (y config completa)
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
-};
+// Si ya tienes la variable app inicializada:
+// export const app = initializeApp(firebaseConfig);
 
-export const app = initializeApp(firebaseConfig);
-
+// --- ESTO ES LO QUE TE FALTA SEGURO ---
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 export const db = getFirestore(app);
+
+// ¡¡ESTA ES LA LÍNEA CLAVE QUE FALTA!!
+// Sin esto, la app se rompe porque storageService la busca y no la encuentra.
 export const storage = getStorage(app);

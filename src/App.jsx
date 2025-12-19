@@ -66,9 +66,12 @@ function iconForSubjectName(name) {
 // Auth Guard (LOCAL)
 // -------------------------
 function RequireAuth({ children }) {
-  const session = getSession();
   const loc = useLocation();
-  if (!session?.ok) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+
+  if (!window.__firebaseUser) {
+    return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  }
+
   return children;
 }
 
@@ -91,6 +94,7 @@ const [authLoading, setAuthLoading] = useState(true);
     
   return () => unsub();
 }, []);
+  window.__firebaseUser = user;
   if (authLoading) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white">

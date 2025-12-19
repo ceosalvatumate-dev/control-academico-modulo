@@ -15,7 +15,7 @@ import {
   Bell,
   BookOpen,
   ChevronRight,
-  CloudUpload,
+  Upload,
   Folder,
   LayoutDashboard,
   LogOut,

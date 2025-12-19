@@ -1,62 +1,144 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   HashRouter, Routes, Route, Navigate, Link, useLocation, useNavigate, useParams
 } from "react-router-dom";
 import {
   onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, signOut
 } from "firebase/auth";
-import { auth, googleProvider } from "./firebase";
-import { uploadFileWithProgress, deleteFileFromStorage } from "./services/storageService";
-import {
-  getUserConfig, saveUserConfig, listenUserFiles, addUserFile, deleteUserFile
-} from "./services/firestoreService";
+import { 
+  doc, getDoc, setDoc, collection, onSnapshot, deleteDoc, serverTimestamp 
+} from "firebase/firestore";
+import { 
+  ref, getDownloadURL, uploadBytesResumable, deleteObject 
+} from "firebase/storage";
+
+// IMPORTAMOS DIRECTAMENTE DE FIREBASE.JS
+// (Asegurate que tu firebase.js exporte: auth, googleProvider, db, storage)
+import { auth, googleProvider, db, storage } from "./firebase";
 
 // Iconos
 import {
   Bell, BookOpen, ChevronRight, Upload, Folder, LayoutDashboard, LogOut,
   Search, Settings, Trash2, Download, Plus, X, FileText, Image as ImageIcon,
   Sigma, FlaskConical, Code2, Calculator, Braces, BrainCircuit, Share2,
-  Eye, ListChecks, FileSpreadsheet, Paperclip
+  Eye, Paperclip
 } from "lucide-react";
 
 // -------------------------
-// Mapas de Iconos Disponibles
+// LOGICA DE SERVICIOS (INTEGRADA AQUÍ PARA EVITAR ERRORES)
+// -------------------------
+
+// --- FIRESTORE ---
+async function getUserConfig(uid) {
+  try {
+    const refDoc = doc(db, "users", uid, "app", "config");
+    const snap = await getDoc(refDoc);
+    if (snap.exists()) return snap.data();
+    return { academyName: "Mi Academia", subjects: [], categories: [] };
+  } catch (e) {
+    console.error("Error config:", e);
+    return { academyName: "Error Carga", subjects: [] };
+  }
+}
+
+async function saveUserConfig(uid, cfg) {
+  const refDoc = doc(db, "users", uid, "app", "config");
+  const cleanCfg = JSON.parse(JSON.stringify(cfg)); 
+  await setDoc(refDoc, cleanCfg, { merge: true });
+}
+
+function listenUserFiles(uid, callback) {
+  const colRef = collection(db, "users", uid, "files");
+  return onSnapshot(colRef, (snapshot) => {
+    const files = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
+    callback(files);
+  }, (error) => {
+    console.error("Error listening files:", error);
+  });
+}
+
+async function addUserFile(uid, fileMeta) {
+  const refDoc = doc(db, "users", uid, "files", fileMeta.id);
+  await setDoc(refDoc, { ...fileMeta, createdAt: serverTimestamp() });
+}
+
+async function deleteUserFile(uid, fileId) {
+  const refDoc = doc(db, "users", uid, "files", fileId);
+  await deleteDoc(refDoc);
+}
+
+// --- STORAGE ---
+function uploadFileWithProgress(file, folderPath, onProgress) {
+  return new Promise((resolve, reject) => {
+    if (!storage) {
+      reject(new Error("Firebase Storage no está inicializado. Revisa firebase.js"));
+      return;
+    }
+    const storageRef = ref(storage, `${folderPath}/${Date.now()}_${file.name}`);
+    const uploadTask = uploadBytesResumable(storageRef, file);
+
+    uploadTask.on(
+      "state_changed",
+      (snapshot) => {
+        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+        if (onProgress) onProgress(progress);
+      },
+      (error) => reject(error),
+      async () => {
+        const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+        resolve(downloadURL);
+      }
+    );
+  });
+}
+
+async function deleteFileFromStorage(url) {
+  if (!url || !storage) return;
+  try {
+    const fileRef = ref(storage, url);
+    await deleteObject(fileRef);
+  } catch (error) {
+    console.warn("Storage delete error:", error);
+  }
+}
+
+// -------------------------
+// CONSTANTES & HELPERS
 // -------------------------
 const ICON_MAP = {
-  Folder: Folder,
-  FileText: FileText,
-  BookOpen: BookOpen,
-  Sigma: Sigma,
-  FlaskConical: FlaskConical,
-  Code2: Code2,
-  Calculator: Calculator,
-  Braces: Braces,
-  BrainCircuit: BrainCircuit,
-  ListChecks: ListChecks,
-  FileSpreadsheet: FileSpreadsheet,
-  Paperclip: Paperclip
+  Folder: Folder, FileText: FileText, BookOpen: BookOpen, Sigma: Sigma,
+  FlaskConical: FlaskConical, Code2: Code2, Calculator: Calculator,
+  Braces: Braces, BrainCircuit: BrainCircuit, Paperclip: Paperclip
 };
 
-// Defaults si el usuario no tiene config
 const DEFAULT_CATEGORIES = [
-  { key: "tasks", label: "Lista de tareas", iconKey: "Folder" },
-  { key: "solutions", label: "Soluciones", iconKey: "FileText" },
+  { key: "tasks", label: "Tareas", iconKey: "Folder" },
   { key: "exams", label: "Exámenes", iconKey: "FileText" },
   { key: "books", label: "Libros", iconKey: "BookOpen" }
 ];
 
+function uid(prefix = "id") {
+  return `${prefix}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function formatBytes(bytes = 0) {
+  if (!bytes) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
 // -------------------------
-// Auth Guard
+// COMPONENTES DE UI
 // -------------------------
+
 function RequireAuth({ children, user }) {
   const loc = useLocation();
   if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
   return children;
 }
 
-// -------------------------
-// App Root
-// -------------------------
 export default function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -69,7 +151,7 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  if (authLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white">Cargando...</div>;
+  if (authLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white font-bold">Cargando Sistema...</div>;
 
   return (
     <HashRouter>
@@ -82,9 +164,6 @@ export default function App() {
   );
 }
 
-// -------------------------
-// Login
-// -------------------------
 function Login() {
   const nav = useNavigate();
   const [email, setEmail] = useState("");
@@ -100,8 +179,8 @@ function Login() {
     <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white">
       <div className="bg-slate-800 p-8 rounded-2xl w-96 space-y-6 shadow-2xl border border-slate-700">
         <div className="text-center">
-          <h2 className="text-2xl font-black mb-1">Bienvenido</h2>
-          <p className="text-slate-400 text-sm">Repositorio Académico Personal</p>
+          <h2 className="text-2xl font-black mb-1">Acceso</h2>
+          <p className="text-slate-400 text-sm">Repositorio Académico</p>
         </div>
         {error && <div className="bg-red-500/10 border border-red-500/20 text-red-200 text-sm p-3 rounded-lg">{error}</div>}
         <form onSubmit={(e) => { e.preventDefault(); handleLogin(() => signInWithEmailAndPassword(auth, email, password)); }} className="space-y-4">
@@ -119,16 +198,11 @@ function Login() {
   );
 }
 
-// -------------------------
-// Shell
-// -------------------------
 function Shell({ user }) {
   const [cfg, setCfg] = useState({ subjects: [], categories: DEFAULT_CATEGORIES, academyName: "Cargando..." });
   const [meta, setMeta] = useState([]);
   const [query, setQuery] = useState("");
   const [notifOpen, setNotifOpen] = useState(false);
-
-  // Preview Modal State
   const [previewFile, setPreviewFile] = useState(null);
 
   useEffect(() => {
@@ -154,7 +228,7 @@ function Shell({ user }) {
       <div className="flex min-h-screen">
         <Sidebar cfg={cfg} />
         <div className="flex-1 flex flex-col min-w-0">
-          <Topbar academyName={cfg.academyName} query={query} setQuery={setQuery} notifOpen={notifOpen} setNotifOpen={setNotifOpen} onLogout={onLogout} meta={meta} />
+          <Topbar academyName={cfg.academyName} query={query} setQuery={setQuery} notifOpen={notifOpen} setNotifOpen={setNotifOpen} onLogout={onLogout} />
           <div className="p-6 md:p-8 flex-1 overflow-y-auto">
             <Routes>
               <Route index element={<Dashboard cfg={cfg} meta={meta} />} />
@@ -166,18 +240,11 @@ function Shell({ user }) {
           </div>
         </div>
       </div>
-      
-      {/* Modal de Previsualización */}
-      {previewFile && (
-        <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
-      )}
+      {previewFile && <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />}
     </div>
   );
 }
 
-// -------------------------
-// Sidebar
-// -------------------------
 function Sidebar({ cfg }) {
   const subjects = cfg.subjects || [];
   const loc = useLocation();
@@ -196,21 +263,18 @@ function Sidebar({ cfg }) {
           </div>
         </div>
       </div>
-
       <nav className="flex-1 p-4 space-y-8 overflow-y-auto">
         <NavGroup label="Principal">
           <NavItem to="/app" icon={LayoutDashboard} label="Dashboard" active={isActive("/app")} />
         </NavGroup>
-
         <NavGroup label="Mis Cursos">
           {subjects.map((s) => {
             const Icon = ICON_MAP[s.iconKey] || BookOpen;
             const path = `/app/subject/${s.id}`;
             return <NavItem key={s.id} to={path} icon={Icon} label={s.name} active={loc.pathname === path} />;
           })}
-          {subjects.length === 0 && <div className="px-4 text-xs text-slate-600 italic">No hay cursos aún.</div>}
+          {subjects.length === 0 && <div className="px-4 text-xs text-slate-600 italic">Sin cursos.</div>}
         </NavGroup>
-
         <NavGroup label="Gestión">
           <NavItem to="/app/archives" icon={Folder} label="Todos los archivos" active={isActive("/app/archives")} />
           <NavItem to="/app/settings" icon={Settings} label="Configuración" active={isActive("/app/settings")} />
@@ -238,10 +302,7 @@ function NavItem({ to, icon: Icon, label, active }) {
   );
 }
 
-// -------------------------
-// Topbar
-// -------------------------
-function Topbar({ query, setQuery, onLogout, notifOpen, setNotifOpen }) {
+function Topbar({ query, setQuery, onLogout }) {
   return (
     <div className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur-md px-6 py-4 flex items-center gap-4">
       <div className="flex-1 max-w-xl relative group">
@@ -262,28 +323,22 @@ function Topbar({ query, setQuery, onLogout, notifOpen, setNotifOpen }) {
   );
 }
 
-// -------------------------
-// Dashboard
-// -------------------------
 function Dashboard({ cfg, meta }) {
   const subjects = cfg.subjects || [];
   return (
     <div className="space-y-8 animate-fade-in">
       <header>
         <h1 className="text-3xl font-black tracking-tight">Panel de Control</h1>
-        <p className="text-slate-400 mt-2">Bienvenido a tu repositorio centralizado.</p>
       </header>
-
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <DashCard label="Cursos Activos" value={subjects.length} icon={BookOpen} color="blue" />
         <DashCard label="Archivos Totales" value={meta.length} icon={Folder} color="emerald" />
         <DashCard label="Última Subida" value={meta[0] ? new Date(meta[0].uploadedAt).toLocaleDateString() : "—"} icon={Upload} color="purple" />
       </div>
-
-      <div className="bg-slate-900/30 rounded-3xl border border-slate-800 p-8 flex flex-col md:flex-row items-center justify-between gap-6">
+      <div className="bg-slate-900/30 rounded-3xl border border-slate-800 p-8 flex items-center justify-between gap-6">
         <div>
           <h3 className="text-xl font-bold text-white">Configuración Rápida</h3>
-          <p className="text-slate-400 text-sm mt-1 max-w-md">Personaliza categorías, iconos de materias y preferencias del sistema.</p>
+          <p className="text-slate-400 text-sm mt-1">Personaliza categorías e iconos.</p>
         </div>
         <Link to="/app/settings" className="px-6 py-3 bg-white text-slate-950 rounded-xl font-bold hover:bg-slate-200 transition flex items-center gap-2">
           <Settings size={18} /> Ir a Ajustes
@@ -312,18 +367,13 @@ function DashCard({ label, value, icon: Icon, color }) {
   );
 }
 
-// -------------------------
-// Subject (Materia)
-// -------------------------
 function Subject({ user, cfg, meta, query, onDeleteFile, onPreview }) {
   const { id } = useParams();
   const subject = (cfg.subjects || []).find((s) => s.id === id);
-  // Si no hay categorías en cfg, usar default
   const categories = cfg.categories && cfg.categories.length > 0 ? cfg.categories : DEFAULT_CATEGORIES;
   const [activeTab, setActiveTab] = useState(categories[0]?.key || "general");
   const [uploadOpen, setUploadOpen] = useState(false);
 
-  // Cuando cambie el ID de la url, resetear tab al primero disponible
   useEffect(() => { if (categories[0]) setActiveTab(categories[0].key); }, [id, categories]);
 
   if (!subject) return <div className="p-8 text-center text-slate-500">Materia no encontrada.</div>;
@@ -350,7 +400,6 @@ function Subject({ user, cfg, meta, query, onDeleteFile, onPreview }) {
         </button>
       </div>
 
-      {/* Tabs Dinámicos */}
       <div className="border-b border-slate-800 flex overflow-x-auto gap-1 hide-scrollbar">
         {categories.map((cat) => {
           const isActive = activeTab === cat.key;
@@ -387,7 +436,6 @@ function Subject({ user, cfg, meta, query, onDeleteFile, onPreview }) {
           categoryLabel={categories.find(c => c.key === activeTab)?.label}
           onClose={() => setUploadOpen(false)}
           onSuccess={async (file, tags) => {
-             // Subida con progreso
              await addUserFile(user.uid, {
                 id: uid("file"),
                 subjectId: subject.id,
@@ -397,7 +445,7 @@ function Subject({ user, cfg, meta, query, onDeleteFile, onPreview }) {
                 mime: file.type,
                 tags,
                 uploadedAt: new Date().toISOString(),
-                downloadURL: file.downloadURL, // Viene del modal
+                downloadURL: file.downloadURL,
                 ownerUid: user.uid
              });
              setUploadOpen(false);
@@ -408,9 +456,6 @@ function Subject({ user, cfg, meta, query, onDeleteFile, onPreview }) {
   );
 }
 
-// -------------------------
-// Upload Modal (Drag & Drop + Progress)
-// -------------------------
 function UploadModal({ subject, category, categoryLabel, onClose, onSuccess }) {
   const [file, setFile] = useState(null);
   const [tags, setTags] = useState("");
@@ -419,8 +464,7 @@ function UploadModal({ subject, category, categoryLabel, onClose, onSuccess }) {
   const [dragActive, setDragActive] = useState(false);
 
   const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
     if (e.type === "dragenter" || e.type === "dragover") setDragActive(true);
     else if (e.type === "dragleave") setDragActive(false);
   };
@@ -428,28 +472,21 @@ function UploadModal({ subject, category, categoryLabel, onClose, onSuccess }) {
   const handleDrop = (e) => {
     e.preventDefault(); e.stopPropagation();
     setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setFile(e.dataTransfer.files[0]);
-    }
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
   };
 
   const startUpload = async () => {
     if (!file) return;
     setUploading(true);
     try {
-      // Usamos el servicio con progreso
       const path = `users/${subject.id}/${category}`;
       const url = await uploadFileWithProgress(file, path, (pct) => setProgress(Math.round(pct)));
-      
-      // Inyectamos la URL al file object para pasarlo al padre
       file.downloadURL = url;
-      
-      // Parsear tags
       const tagList = tags.split(",").map(t => t.trim()).filter(Boolean);
       await onSuccess(file, tagList);
     } catch (e) {
       console.error(e);
-      alert("Error subiendo archivo");
+      alert("Error subiendo: " + e.message);
       setUploading(false);
     }
   };
@@ -464,9 +501,7 @@ function UploadModal({ subject, category, categoryLabel, onClose, onSuccess }) {
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white"><X size={20} /></button>
         </div>
-
         <div className="p-6 space-y-5">
-          {/* Drag Zone */}
           <div
             onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}
             className={`relative border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all ${
@@ -484,54 +519,23 @@ function UploadModal({ subject, category, categoryLabel, onClose, onSuccess }) {
                <>
                  <Upload size={40} className="text-slate-500 mb-3" />
                  <div className="font-medium text-slate-300">Arrastra tu archivo aquí</div>
-                 <div className="text-xs text-slate-500 mt-1">o haz clic para explorar</div>
                </>
             )}
           </div>
-
-          {/* Tags */}
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Etiquetas (Opcional)</label>
-            <input 
-              className="w-full bg-slate-950/50 border border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-blue-500 text-sm"
-              placeholder="Ej: examen, 2024, difícil (separado por comas)"
-              value={tags}
-              onChange={e => setTags(e.target.value)}
-              disabled={uploading}
-            />
-          </div>
-
-          {/* Progress Bar */}
+          <input className="w-full bg-slate-950/50 border border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-blue-500 text-sm" placeholder="Etiquetas (opcional)" value={tags} onChange={e => setTags(e.target.value)} disabled={uploading} />
           {uploading && (
              <div className="space-y-1">
-               <div className="flex justify-between text-xs font-bold text-slate-400">
-                 <span>Subiendo...</span>
-                 <span>{progress}%</span>
-               </div>
-               <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-                 <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${progress}%` }}></div>
-               </div>
+               <div className="flex justify-between text-xs font-bold text-slate-400"><span>Subiendo...</span><span>{progress}%</span></div>
+               <div className="h-2 bg-slate-800 rounded-full overflow-hidden"><div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${progress}%` }}></div></div>
              </div>
           )}
-
-          <button
-            onClick={startUpload}
-            disabled={!file || uploading}
-            className={`w-full py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition ${
-              !file || uploading ? "bg-slate-800 text-slate-500" : "bg-blue-600 hover:bg-blue-500 text-white"
-            }`}
-          >
-            {uploading ? "Procesando..." : "Subir a la Nube"}
-          </button>
+          <button onClick={startUpload} disabled={!file || uploading} className={`w-full py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 transition ${!file || uploading ? "bg-slate-800 text-slate-500" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>{uploading ? "Procesando..." : "Subir a la Nube"}</button>
         </div>
       </div>
     </div>
   );
 }
 
-// -------------------------
-// File Row (WhatsApp & Actions)
-// -------------------------
 function FileRow({ file, onDelete, onPreview }) {
   const isImage = file.mime?.startsWith("image/");
   const Icon = isImage ? ImageIcon : FileText;
@@ -554,42 +558,20 @@ function FileRow({ file, onDelete, onPreview }) {
             <span>{formatBytes(file.size)}</span>
             <span>•</span>
             <span>{new Date(file.uploadedAt).toLocaleDateString()}</span>
-            {file.tags && file.tags.length > 0 && (
-              <>
-                 <span>•</span>
-                 <div className="flex gap-1">
-                   {file.tags.map((t,i) => <span key={i} className="bg-slate-800 px-1.5 rounded text-[10px] text-slate-400">#{t}</span>)}
-                 </div>
-              </>
-            )}
+            {file.tags && file.tags.length > 0 && <div className="flex gap-1">{file.tags.map((t,i) => <span key={i} className="bg-slate-800 px-1.5 rounded text-[10px] text-slate-400">#{t}</span>)}</div>}
           </div>
         </div>
       </div>
-
       <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={shareWhatsApp} className="p-2 rounded-lg bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366]/20 transition" title="Enviar por WhatsApp">
-          <Share2 size={18} />
-        </button>
-        
-        <button onClick={onPreview} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition" title="Vista Previa">
-          <Eye size={18} />
-        </button>
-
-        <button onClick={() => window.open(file.downloadURL, "_blank")} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition" title="Descargar">
-          <Download size={18} />
-        </button>
-
-        <button onClick={() => window.confirm("¿Borrar archivo?") && onDelete()} className="p-2 rounded-lg hover:bg-red-500/20 text-slate-500 hover:text-red-400 transition">
-          <Trash2 size={18} />
-        </button>
+        <button onClick={shareWhatsApp} className="p-2 rounded-lg bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366]/20 transition"><Share2 size={18} /></button>
+        <button onClick={onPreview} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"><Eye size={18} /></button>
+        <button onClick={() => window.open(file.downloadURL, "_blank")} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"><Download size={18} /></button>
+        <button onClick={() => window.confirm("¿Borrar archivo?") && onDelete()} className="p-2 rounded-lg hover:bg-red-500/20 text-slate-500 hover:text-red-400 transition"><Trash2 size={18} /></button>
       </div>
     </div>
   );
 }
 
-// -------------------------
-// Preview Modal
-// -------------------------
 function PreviewModal({ file, onClose }) {
   const isImg = file.mime?.startsWith("image/");
   const isPdf = file.mime?.includes("pdf");
@@ -606,7 +588,7 @@ function PreviewModal({ file, onClose }) {
         {!isImg && !isPdf && (
            <div className="text-center">
              <FileText size={64} className="mx-auto text-slate-600 mb-4" />
-             <p className="text-slate-400">Vista previa no disponible para este formato.</p>
+             <p className="text-slate-400">Vista previa no disponible.</p>
              <a href={file.downloadURL} target="_blank" rel="noreferrer" className="mt-4 inline-block text-blue-400 hover:underline">Descargar archivo</a>
            </div>
         )}
@@ -615,20 +597,41 @@ function PreviewModal({ file, onClose }) {
   );
 }
 
-// -------------------------
-// Settings Page (Personalización Total)
-// -------------------------
+function Archives({ cfg, meta, query, onDeleteFile, onPreview }) {
+  const subjects = cfg.subjects || [];
+  const [cat, setCat] = useState("all");
+  const filtered = useMemo(() => {
+    const q = (query || "").trim().toLowerCase();
+    return meta
+      .filter(m => cat === "all" || m.category === cat)
+      .filter(m => !q || m.name.toLowerCase().includes(q))
+      .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+  }, [meta, cat, query]);
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-3xl font-black">Todos los Archivos</h1>
+      <div className="space-y-3">
+        {filtered.map(f => <FileRow key={f.id} file={f} onDelete={() => onDeleteFile(f)} onPreview={() => onPreview(f)} />)}
+      </div>
+    </div>
+  );
+}
+
 function SettingsPage({ user, cfg, setCfg }) {
   const [activeTab, setActiveTab] = useState("general");
   const [academyName, setAcademyName] = useState(cfg.academyName || "");
   const [subjects, setSubjects] = useState(cfg.subjects || []);
   const [categories, setCategories] = useState(cfg.categories || DEFAULT_CATEGORIES);
-  
-  // Inputs temporales
   const [newSubj, setNewSubj] = useState({ name: "", icon: "BookOpen" });
   const [newCat, setNewCat] = useState({ label: "", icon: "Folder" });
-
   const iconOptions = Object.keys(ICON_MAP);
+
+  useEffect(() => {
+    setAcademyName(cfg.academyName || "");
+    setSubjects(cfg.subjects || []);
+    setCategories(cfg.categories || DEFAULT_CATEGORIES);
+  }, [cfg]);
 
   const saveAll = async () => {
     const next = { ...cfg, academyName, subjects, categories };
@@ -639,138 +642,59 @@ function SettingsPage({ user, cfg, setCfg }) {
 
   const handleAddSubject = () => {
      if(!newSubj.name) return;
-     const id = uid("subj");
-     setSubjects([...subjects, { id, name: newSubj.name, iconKey: newSubj.icon }]);
+     setSubjects([...subjects, { id: uid("subj"), name: newSubj.name, iconKey: newSubj.icon }]);
      setNewSubj({ name: "", icon: "BookOpen" });
   };
 
   const handleAddCategory = () => {
     if(!newCat.label) return;
-    const key = uid("cat");
-    setCategories([...categories, { key, label: newCat.label, iconKey: newCat.icon }]);
+    setCategories([...categories, { key: uid("cat"), label: newCat.label, iconKey: newCat.icon }]);
     setNewCat({ label: "", icon: "Folder" });
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
+    <div className="max-w-4xl mx-auto space-y-8 pb-10">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-black">Configuración</h1>
         <button onClick={saveAll} className="bg-white text-slate-900 px-6 py-2 rounded-xl font-bold hover:bg-slate-200 transition">Guardar Cambios</button>
       </div>
-
       <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-        {/* Menu Lateral Ajustes */}
         <div className="space-y-2">
            {["general", "subjects", "categories"].map(k => (
-             <button key={k} onClick={() => setActiveTab(k)} className={`w-full text-left px-4 py-3 rounded-xl font-bold text-sm transition ${activeTab === k ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"}`}>
-               {k === "general" && "General"}
-               {k === "subjects" && "Materias"}
-               {k === "categories" && "Carpetas"}
-             </button>
+             <button key={k} onClick={() => setActiveTab(k)} className={`w-full text-left px-4 py-3 rounded-xl font-bold text-sm transition ${activeTab === k ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"}`}>{k.toUpperCase()}</button>
            ))}
         </div>
-
-        {/* Contenido */}
         <div className="md:col-span-3 space-y-8">
-          
           {activeTab === "general" && (
             <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
-              <h3 className="font-bold text-xl mb-4">Perfil de la Academia</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Nombre</label>
-                  <input className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 outline-none focus:border-blue-500" value={academyName} onChange={e => setAcademyName(e.target.value)} />
-                </div>
-              </div>
+              <h3 className="font-bold text-xl mb-4">Perfil</h3>
+              <input className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 outline-none focus:border-blue-500" value={academyName} onChange={e => setAcademyName(e.target.value)} />
             </section>
           )}
-
           {activeTab === "subjects" && (
             <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
-              <h3 className="font-bold text-xl mb-4">Gestión de Materias</h3>
+              <h3 className="font-bold text-xl mb-4">Materias</h3>
               <div className="flex gap-2 mb-6 p-4 bg-slate-950 rounded-2xl border border-slate-800">
-                <div className="flex-1">
-                  <input placeholder="Nombre de la materia..." className="w-full bg-transparent outline-none text-sm" value={newSubj.name} onChange={e => setNewSubj({...newSubj, name: e.target.value})} />
-                </div>
-                <select 
-                  className="bg-slate-900 text-xs border border-slate-700 rounded-lg outline-none px-2"
-                  value={newSubj.icon}
-                  onChange={e => setNewSubj({...newSubj, icon: e.target.value})}
-                >
-                  {iconOptions.map(i => <option key={i} value={i}>{i}</option>)}
-                </select>
-                <button onClick={handleAddSubject} className="bg-blue-600 px-3 py-1 rounded-lg font-bold text-xs hover:bg-blue-500">Agregar</button>
+                <input placeholder="Nueva materia..." className="w-full bg-transparent outline-none text-sm" value={newSubj.name} onChange={e => setNewSubj({...newSubj, name: e.target.value})} />
+                <select className="bg-slate-900 text-xs border border-slate-700 rounded-lg outline-none px-2" value={newSubj.icon} onChange={e => setNewSubj({...newSubj, icon: e.target.value})}>{iconOptions.map(i => <option key={i} value={i}>{i}</option>)}</select>
+                <button onClick={handleAddSubject} className="bg-blue-600 px-3 py-1 rounded-lg font-bold text-xs">Agregar</button>
               </div>
-
-              <div className="space-y-2">
-                {subjects.map(s => {
-                  const Icon = ICON_MAP[s.iconKey] || BookOpen;
-                  return (
-                    <div key={s.id} className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800">
-                      <div className="flex items-center gap-3">
-                        <Icon size={18} className="text-slate-400" />
-                        <span className="font-bold">{s.name}</span>
-                      </div>
-                      <button onClick={() => setSubjects(subjects.filter(x => x.id !== s.id))} className="text-red-400 hover:text-red-300"><Trash2 size={16}/></button>
-                    </div>
-                  );
-                })}
-              </div>
+              <div className="space-y-2">{subjects.map(s => <div key={s.id} className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800"><span className="font-bold">{s.name}</span><button onClick={() => setSubjects(subjects.filter(x => x.id !== s.id))} className="text-red-400"><Trash2 size={16}/></button></div>)}</div>
             </section>
           )}
-
           {activeTab === "categories" && (
              <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
-               <h3 className="font-bold text-xl mb-1">Tipos de Archivo (Carpetas)</h3>
-               <p className="text-slate-400 text-sm mb-6">Define qué pestañas aparecen dentro de cada materia.</p>
-               
+               <h3 className="font-bold text-xl mb-4">Carpetas (Tabs)</h3>
                <div className="flex gap-2 mb-6 p-4 bg-slate-950 rounded-2xl border border-slate-800">
-                <div className="flex-1">
-                  <input placeholder="Nueva categoría (ej: Formularios)..." className="w-full bg-transparent outline-none text-sm" value={newCat.label} onChange={e => setNewCat({...newCat, label: e.target.value})} />
-                </div>
-                <select 
-                  className="bg-slate-900 text-xs border border-slate-700 rounded-lg outline-none px-2"
-                  value={newCat.icon}
-                  onChange={e => setNewCat({...newCat, icon: e.target.value})}
-                >
-                  {iconOptions.map(i => <option key={i} value={i}>{i}</option>)}
-                </select>
-                <button onClick={handleAddCategory} className="bg-emerald-600 px-3 py-1 rounded-lg font-bold text-xs hover:bg-emerald-500">Agregar</button>
+                <input placeholder="Nueva carpeta..." className="w-full bg-transparent outline-none text-sm" value={newCat.label} onChange={e => setNewCat({...newCat, label: e.target.value})} />
+                <select className="bg-slate-900 text-xs border border-slate-700 rounded-lg outline-none px-2" value={newCat.icon} onChange={e => setNewCat({...newCat, icon: e.target.value})}>{iconOptions.map(i => <option key={i} value={i}>{i}</option>)}</select>
+                <button onClick={handleAddCategory} className="bg-emerald-600 px-3 py-1 rounded-lg font-bold text-xs">Agregar</button>
               </div>
-
-              <div className="space-y-2">
-                 {categories.map(c => {
-                   const Icon = ICON_MAP[c.iconKey] || Folder;
-                   return (
-                     <div key={c.key} className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800">
-                       <div className="flex items-center gap-3">
-                         <Icon size={18} className="text-slate-400" />
-                         <span className="font-medium">{c.label}</span>
-                       </div>
-                       <button onClick={() => setCategories(categories.filter(x => x.key !== c.key))} className="text-red-400 hover:text-red-300"><Trash2 size={16}/></button>
-                     </div>
-                   );
-                 })}
-              </div>
+              <div className="space-y-2">{categories.map(c => <div key={c.key} className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800"><span className="font-medium">{c.label}</span><button onClick={() => setCategories(categories.filter(x => x.key !== c.key))} className="text-red-400"><Trash2 size={16}/></button></div>)}</div>
              </section>
           )}
         </div>
       </div>
     </div>
   );
-}
-
-// -------------------------
-// Helpers
-// -------------------------
-function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(36).substr(2, 9)}`;
-}
-
-function formatBytes(bytes = 0) {
-  if (!bytes) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }

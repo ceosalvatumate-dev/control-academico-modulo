@@ -192,7 +192,7 @@ function Login() {
     </div>
   );
 }
-    setErr("Correo o contraseña incorrectos.");
+   
   };
 
   return (

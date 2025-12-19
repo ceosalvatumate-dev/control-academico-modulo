@@ -6,7 +6,7 @@ import {
   onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, signOut
 } from "firebase/auth";
 import { 
-  doc, getDoc, setDoc, collection, onSnapshot, deleteDoc, serverTimestamp 
+  doc, getDoc, setDoc, collection, onSnapshot, deleteDoc, serverTimestamp, updateDoc 
 } from "firebase/firestore";
 import { 
   ref, getDownloadURL, uploadBytesResumable, deleteObject 
@@ -20,11 +20,12 @@ import {
   Bell, BookOpen, ChevronRight, Upload, Folder, LayoutDashboard, LogOut,
   Search, Settings, Trash2, Download, Plus, X, FileText, Image as ImageIcon,
   Sigma, FlaskConical, Code2, Calculator, Braces, BrainCircuit, Share2,
-  Eye, Paperclip, Link2, Copy, ArrowUp, ArrowDown, Check, Palette
+  Eye, Paperclip, Link2, Check, ArrowUp, ArrowDown, Palette,
+  LayoutGrid, List as ListIcon, RefreshCcw, FileSpreadsheet, Presentation
 } from "lucide-react";
 
 // -------------------------
-// TEMAS DE COLOR (PERSONALIZACIÓN)
+// TEMAS DE COLOR
 // -------------------------
 const THEMES = {
   blue: { 
@@ -54,11 +55,11 @@ const THEMES = {
 };
 
 // -------------------------
-// HELPERS GLOBALES
+// HELPERS
 // -------------------------
-// Normaliza texto para búsqueda (quita acentos y mayúsculas)
 const normalize = (text) => {
-  return text ? text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() : "";
+  if (!text) return "";
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 };
 
 const ICON_MAP = {
@@ -86,19 +87,17 @@ function formatBytes(bytes = 0) {
 }
 
 // -------------------------
-// LOGICA DE SERVICIOS
+// LOGICA FIRESTORE
 // -------------------------
-
-// --- FIRESTORE ---
 async function getUserConfig(uid) {
   try {
     const refDoc = doc(db, "users", uid, "app", "config");
     const snap = await getDoc(refDoc);
     if (snap.exists()) return snap.data();
-    return { academyName: "Mi Repositorio", logoUrl: "", themeColor: "blue", subjects: [], categories: [] };
+    return { academyName: "Mi Repositorio", logoUrl: "", themeColor: "blue", subjects: [], categories: [], viewMode: "list" };
   } catch (e) {
     console.error("Error config:", e);
-    return { academyName: "Error Carga", subjects: [] };
+    return { academyName: "Error", subjects: [] };
   }
 }
 
@@ -110,6 +109,7 @@ async function saveUserConfig(uid, cfg) {
 
 function listenUserFiles(uid, callback) {
   const colRef = collection(db, "users", uid, "files");
+  // Escuchamos TODOS los archivos y filtramos en cliente (más rápido para UI reactiva)
   return onSnapshot(colRef, (snapshot) => {
     const files = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
     callback(files);
@@ -120,19 +120,34 @@ function listenUserFiles(uid, callback) {
 
 async function addUserFile(uid, fileMeta) {
   const refDoc = doc(db, "users", uid, "files", fileMeta.id);
-  await setDoc(refDoc, { ...fileMeta, createdAt: serverTimestamp() });
+  await setDoc(refDoc, { ...fileMeta, createdAt: serverTimestamp(), deletedAt: null });
 }
 
-async function deleteUserFile(uid, fileId) {
+// Mover a papelera (Soft Delete)
+async function softDeleteFile(uid, fileId) {
+  const refDoc = doc(db, "users", uid, "files", fileId);
+  await updateDoc(refDoc, { deletedAt: new Date().toISOString() });
+}
+
+// Restaurar de papelera
+async function restoreFile(uid, fileId) {
+  const refDoc = doc(db, "users", uid, "files", fileId);
+  await updateDoc(refDoc, { deletedAt: null });
+}
+
+// Borrado Físico Definitivo
+async function permanentDeleteFile(uid, fileId) {
   const refDoc = doc(db, "users", uid, "files", fileId);
   await deleteDoc(refDoc);
 }
 
-// --- STORAGE ---
+// -------------------------
+// LOGICA STORAGE
+// -------------------------
 function uploadFileWithProgress(file, folderPath, onProgress) {
   return new Promise((resolve, reject) => {
     if (!storage) {
-      reject(new Error("Firebase Storage no está inicializado."));
+      reject(new Error("Firebase Storage no inicializado."));
       return;
     }
     const storageRef = ref(storage, `${folderPath}/${Date.now()}_${file.name}`);
@@ -159,12 +174,12 @@ async function deleteFileFromStorage(url) {
     const fileRef = ref(storage, url);
     await deleteObject(fileRef);
   } catch (error) {
-    console.warn("Storage delete error:", error);
+    console.warn("Storage delete error (archivo ya no existe?):", error);
   }
 }
 
 // -------------------------
-// COMPONENTES DE UI
+// COMPONENTES UI
 // -------------------------
 
 function RequireAuth({ children, user }) {
@@ -233,17 +248,17 @@ function Login() {
 }
 
 function Shell({ user }) {
-  const [cfg, setCfg] = useState({ subjects: [], categories: DEFAULT_CATEGORIES, academyName: "Cargando...", themeColor: "blue", logoUrl: "" });
+  const [cfg, setCfg] = useState({ subjects: [], categories: DEFAULT_CATEGORIES, academyName: "Cargando...", themeColor: "blue", logoUrl: "", viewMode: "list" });
   const [meta, setMeta] = useState([]);
   const [query, setQuery] = useState("");
-  const [notifOpen, setNotifOpen] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
 
   useEffect(() => {
     if (user?.uid) getUserConfig(user.uid).then(c => setCfg({ 
       ...c, 
       categories: c.categories || DEFAULT_CATEGORIES,
-      themeColor: c.themeColor || "blue" 
+      themeColor: c.themeColor || "blue",
+      viewMode: c.viewMode || "list"
     }));
   }, [user]);
 
@@ -253,12 +268,30 @@ function Shell({ user }) {
 
   const onLogout = async () => { await signOut(auth); window.location.hash = "#/login"; };
 
-  const handleDeleteFile = async (fileMeta) => {
+  // Gestión de borrado
+  const handleSoftDelete = async (fileMeta) => {
     if (!user?.uid) return;
-    try {
-      await deleteUserFile(user.uid, fileMeta.id);
-      if (fileMeta.downloadURL) await deleteFileFromStorage(fileMeta.downloadURL);
-    } catch (e) { console.error(e); alert("Error al eliminar"); }
+    await softDeleteFile(user.uid, fileMeta.id);
+  };
+
+  const handleRestore = async (fileMeta) => {
+    if (!user?.uid) return;
+    await restoreFile(user.uid, fileMeta.id);
+  };
+
+  const handlePermanentDelete = async (fileMeta) => {
+    if (!user?.uid) return;
+    if (window.confirm("¿Estás seguro? Esta acción es irreversible.")) {
+      await deleteUserFile(user.uid, fileMeta.id); // Borra doc
+      if (fileMeta.downloadURL) await deleteFileFromStorage(fileMeta.downloadURL); // Borra físico
+    }
+  };
+
+  const toggleViewMode = async () => {
+    const nextMode = cfg.viewMode === "list" ? "grid" : "list";
+    const nextCfg = { ...cfg, viewMode: nextMode };
+    setCfg(nextCfg);
+    if(user?.uid) await saveUserConfig(user.uid, nextCfg);
   };
 
   const theme = THEMES[cfg.themeColor] || THEMES.blue;
@@ -268,12 +301,30 @@ function Shell({ user }) {
       <div className="flex min-h-screen">
         <Sidebar cfg={cfg} theme={theme} />
         <div className="flex-1 flex flex-col min-w-0">
-          <Topbar academyName={cfg.academyName} query={query} setQuery={setQuery} notifOpen={notifOpen} setNotifOpen={setNotifOpen} onLogout={onLogout} theme={theme} />
+          <Topbar academyName={cfg.academyName} query={query} setQuery={setQuery} onLogout={onLogout} theme={theme} />
           <div className="p-6 md:p-8 flex-1 overflow-y-auto">
             <Routes>
               <Route index element={<Dashboard cfg={cfg} meta={meta} theme={theme} />} />
-              <Route path="subject/:id" element={<Subject user={user} cfg={cfg} meta={meta} query={query} onDeleteFile={handleDeleteFile} onPreview={setPreviewFile} theme={theme} />} />
-              <Route path="archives" element={<Archives cfg={cfg} meta={meta} query={query} onDeleteFile={handleDeleteFile} onPreview={setPreviewFile} theme={theme} />} />
+              <Route path="subject/:id" element={
+                <Subject 
+                  user={user} cfg={cfg} meta={meta} query={query} 
+                  onDelete={handleSoftDelete} onPreview={setPreviewFile} theme={theme} 
+                  viewMode={cfg.viewMode} toggleView={toggleViewMode}
+                />
+              } />
+              <Route path="archives" element={
+                <Archives 
+                  cfg={cfg} meta={meta} query={query} 
+                  onDelete={handleSoftDelete} onPreview={setPreviewFile} theme={theme}
+                  viewMode={cfg.viewMode} toggleView={toggleViewMode}
+                />
+              } />
+              <Route path="trash" element={
+                <TrashPage 
+                  meta={meta} query={query} theme={theme}
+                  onRestore={handleRestore} onPermanentDelete={handlePermanentDelete} 
+                />
+              } />
               <Route path="settings" element={<SettingsPage user={user} cfg={cfg} setCfg={setCfg} theme={theme} />} />
               <Route path="*" element={<Navigate to="/app" replace />} />
             </Routes>
@@ -321,6 +372,7 @@ function Sidebar({ cfg, theme }) {
         </NavGroup>
         <NavGroup label="Gestión">
           <NavItem to="/app/archives" icon={Folder} label="Todos los archivos" active={isActive("/app/archives")} theme={theme} />
+          <NavItem to="/app/trash" icon={Trash2} label="Papelera" active={isActive("/app/trash")} theme={theme} />
           <NavItem to="/app/settings" icon={Settings} label="Configuración" active={isActive("/app/settings")} theme={theme} />
         </NavGroup>
       </nav>
@@ -338,10 +390,8 @@ function NavGroup({ label, children }) {
 }
 
 function NavItem({ to, icon: Icon, label, active, theme }) {
-  // Aplicamos el color del tema si está activo
   const activeClass = active ? `${theme.light} ${theme.text}` : "text-slate-400 hover:bg-slate-900 hover:text-slate-200";
   const iconClass = active ? theme.text : "text-slate-500";
-
   return (
     <Link to={to} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all text-sm font-medium ${activeClass}`}>
       <Icon size={18} className={iconClass} />
@@ -357,7 +407,7 @@ function Topbar({ query, setQuery, onLogout, theme }) {
         <Search className={`absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 transition group-focus-within:${theme.text}`} size={16} />
         <input 
           className="w-full bg-slate-900/50 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 outline-none focus:bg-slate-900 transition text-sm text-slate-200 placeholder:text-slate-600 focus:border-slate-700"
-          placeholder="Buscar archivo por nombre..."
+          placeholder="Buscar archivo (ignora acentos)..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -373,15 +423,20 @@ function Topbar({ query, setQuery, onLogout, theme }) {
 
 function Dashboard({ cfg, meta, theme }) {
   const subjects = cfg.subjects || [];
+  // Contamos solo archivos no borrados
+  const activeFiles = meta.filter(m => !m.deletedAt);
+  const trashFiles = meta.filter(m => m.deletedAt);
+
   return (
     <div className="space-y-8 animate-fade-in">
       <header>
         <h1 className="text-3xl font-black tracking-tight">Panel de Control</h1>
       </header>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <DashCard label="Cursos Activos" value={subjects.length} icon={BookOpen} color={theme.text} bg={theme.light} border={theme.border} />
-        <DashCard label="Archivos Totales" value={meta.length} icon={Folder} color={theme.text} bg={theme.light} border={theme.border} />
-        <DashCard label="Última Subida" value={meta[0] ? new Date(meta[0].uploadedAt).toLocaleDateString() : "—"} icon={Upload} color={theme.text} bg={theme.light} border={theme.border} />
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <DashCard label="Cursos" value={subjects.length} icon={BookOpen} color={theme.text} bg={theme.light} border={theme.border} />
+        <DashCard label="Archivos Activos" value={activeFiles.length} icon={Folder} color={theme.text} bg={theme.light} border={theme.border} />
+        <DashCard label="En Papelera" value={trashFiles.length} icon={Trash2} color="text-red-400" bg="bg-red-500/10" border="border-red-500/20" />
+        <DashCard label="Última Subida" value={activeFiles[0] ? new Date(activeFiles[0].uploadedAt).toLocaleDateString() : "—"} icon={Upload} color="text-slate-400" bg="bg-slate-800" border="border-slate-700" />
       </div>
       <div className="bg-slate-900/30 rounded-3xl border border-slate-800 p-8 flex items-center justify-between gap-6">
         <div>
@@ -397,10 +452,8 @@ function Dashboard({ cfg, meta, theme }) {
 }
 
 function DashCard({ label, value, icon: Icon, color, bg, border }) {
-  // Nota: Usamos styles inline para colores dinámicos si tailwind JIT falla con strings concatenados, 
-  // pero aquí usamos las clases pasadas desde el theme object que son strings completos.
   return (
-    <div className={`p-6 rounded-2xl border flex items-center gap-4 border-slate-800`}>
+    <div className={`p-6 rounded-2xl border flex items-center gap-4 ${border || "border-slate-800"}`}>
       <div className={`h-12 w-12 rounded-xl flex items-center justify-center ${bg} ${color}`}>
         <Icon size={24} />
       </div>
@@ -412,7 +465,10 @@ function DashCard({ label, value, icon: Icon, color, bg, border }) {
   );
 }
 
-function Subject({ user, cfg, meta, query, onDeleteFile, onPreview, theme }) {
+// -------------------------
+// VISTA: SUBJECT
+// -------------------------
+function Subject({ user, cfg, meta, query, onDelete, onPreview, theme, viewMode, toggleView }) {
   const { id } = useParams();
   const subject = (cfg.subjects || []).find((s) => s.id === id);
   const categories = cfg.categories && cfg.categories.length > 0 ? cfg.categories : DEFAULT_CATEGORIES;
@@ -423,10 +479,11 @@ function Subject({ user, cfg, meta, query, onDeleteFile, onPreview, theme }) {
 
   if (!subject) return <div className="p-8 text-center text-slate-500">Materia no encontrada.</div>;
 
-  // FILTRO ARREGLADO (BUSQUEDA INSENSIBLE)
+  // FILTRO "BUSCADOR" + NO BORRADOS
   const filtered = useMemo(() => {
     const q = normalize(query);
     return meta
+      .filter(m => !m.deletedAt) // Excluir papelera
       .filter(m => m.subjectId === subject.id && m.category === activeTab)
       .filter(m => {
         if (!q) return true;
@@ -446,9 +503,14 @@ function Subject({ user, cfg, meta, query, onDeleteFile, onPreview, theme }) {
           </div>
           <h1 className="text-3xl font-black">{subject.name}</h1>
         </div>
-        <button onClick={() => setUploadOpen(true)} className={`px-5 py-3 text-white rounded-xl font-bold transition flex items-center gap-2 shadow-lg ${theme.bg} ${theme.hover}`}>
-          <Plus size={20} /> <span className="hidden sm:inline">Subir Archivo</span>
-        </button>
+        <div className="flex gap-2">
+          <button onClick={toggleView} className="p-3 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white transition">
+            {viewMode === "grid" ? <ListIcon size={20}/> : <LayoutGrid size={20}/>}
+          </button>
+          <button onClick={() => setUploadOpen(true)} className={`px-5 py-3 text-white rounded-xl font-bold transition flex items-center gap-2 shadow-lg ${theme.bg} ${theme.hover}`}>
+            <Plus size={20} /> <span className="hidden sm:inline">Subir Archivo</span>
+          </button>
+        </div>
       </div>
 
       <div className="border-b border-slate-800 flex overflow-x-auto gap-1 hide-scrollbar">
@@ -467,18 +529,23 @@ function Subject({ user, cfg, meta, query, onDeleteFile, onPreview, theme }) {
         })}
       </div>
 
-      <div className="space-y-3">
-        {filtered.map(f => (
-          <FileRow key={f.id} file={f} onDelete={() => onDeleteFile(f)} onPreview={() => onPreview(f)} theme={theme} />
-        ))}
-        {filtered.length === 0 && (
-          <div className="py-12 flex flex-col items-center justify-center text-slate-500 border border-dashed border-slate-800 rounded-3xl bg-slate-900/20">
-            <Folder size={48} className="opacity-20 mb-4" />
-            <p>Carpeta vacía</p>
-            <button onClick={() => setUploadOpen(true)} className={`mt-4 text-sm font-bold hover:underline ${theme.text}`}>Subir primer archivo</button>
-          </div>
-        )}
-      </div>
+      {viewMode === "grid" ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+          {filtered.map(f => <FileCard key={f.id} file={f} onDelete={() => onDelete(f)} onPreview={() => onPreview(f)} theme={theme} />)}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(f => <FileRow key={f.id} file={f} onDelete={() => onDelete(f)} onPreview={() => onPreview(f)} theme={theme} />)}
+        </div>
+      )}
+
+      {filtered.length === 0 && (
+        <div className="py-12 flex flex-col items-center justify-center text-slate-500 border border-dashed border-slate-800 rounded-3xl bg-slate-900/20">
+          <Folder size={48} className="opacity-20 mb-4" />
+          <p>Carpeta vacía</p>
+          <button onClick={() => setUploadOpen(true)} className={`mt-4 text-sm font-bold hover:underline ${theme.text}`}>Subir primer archivo</button>
+        </div>
+      )}
 
       {uploadOpen && (
         <UploadModal
@@ -508,6 +575,218 @@ function Subject({ user, cfg, meta, query, onDeleteFile, onPreview, theme }) {
   );
 }
 
+// -------------------------
+// VISTA: ARCHIVES
+// -------------------------
+function Archives({ cfg, meta, query, onDelete, onPreview, theme, viewMode, toggleView }) {
+  const [cat, setCat] = useState("all");
+  const filtered = useMemo(() => {
+    const q = normalize(query);
+    return meta
+      .filter(m => !m.deletedAt)
+      .filter(m => cat === "all" || m.category === cat)
+      .filter(m => {
+        if (!q) return true;
+        const name = normalize(m.name);
+        const tags = m.tags ? m.tags.map(t => normalize(t)) : [];
+        return name.includes(q) || tags.some(t => t.includes(q));
+      })
+      .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+  }, [meta, cat, query]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-black">Todos los Archivos</h1>
+        <button onClick={toggleView} className="p-3 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white transition">
+            {viewMode === "grid" ? <ListIcon size={20}/> : <LayoutGrid size={20}/>}
+        </button>
+      </div>
+
+      {viewMode === "grid" ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+          {filtered.map(f => <FileCard key={f.id} file={f} onDelete={() => onDelete(f)} onPreview={() => onPreview(f)} theme={theme} />)}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(f => <FileRow key={f.id} file={f} onDelete={() => onDelete(f)} onPreview={() => onPreview(f)} theme={theme} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// -------------------------
+// VISTA: TRASH (PAPELERA)
+// -------------------------
+function TrashPage({ meta, query, onRestore, onPermanentDelete, theme }) {
+  const filtered = useMemo(() => {
+    const q = normalize(query);
+    return meta
+      .filter(m => m.deletedAt) // SOLO borrados
+      .filter(m => {
+        if (!q) return true;
+        const name = normalize(m.name);
+        return name.includes(q);
+      })
+      .sort((a, b) => new Date(b.deletedAt) - new Date(a.deletedAt));
+  }, [meta, query]);
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-3xl font-black text-red-400">Papelera de Reciclaje</h1>
+      <p className="text-slate-400">Los archivos aquí pueden restaurarse o eliminarse definitivamente.</p>
+      
+      <div className="space-y-3">
+        {filtered.map(f => (
+          <div key={f.id} className="group flex items-center justify-between p-4 bg-red-900/10 border border-red-900/30 rounded-2xl">
+             <div className="flex items-center gap-4 min-w-0">
+               <div className="h-12 w-12 rounded-xl bg-red-900/20 flex items-center justify-center shrink-0">
+                 <Trash2 size={20} className="text-red-400" />
+               </div>
+               <div className="min-w-0">
+                 <div className="font-bold text-slate-200 truncate line-through opacity-70">{f.name}</div>
+                 <div className="text-xs text-red-300/60">Eliminado: {new Date(f.deletedAt).toLocaleDateString()}</div>
+               </div>
+             </div>
+             <div className="flex items-center gap-2">
+               <button onClick={() => onRestore(f)} className="px-3 py-2 rounded-lg bg-emerald-500/10 text-emerald-400 font-bold text-xs hover:bg-emerald-500/20 flex items-center gap-2">
+                 <RefreshCcw size={14}/> Restaurar
+               </button>
+               <button onClick={() => onPermanentDelete(f)} className="px-3 py-2 rounded-lg bg-red-500/10 text-red-400 font-bold text-xs hover:bg-red-500/20 flex items-center gap-2">
+                 <X size={14}/> Eliminar
+               </button>
+             </div>
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <div className="p-12 text-center text-slate-500 border border-dashed border-slate-800 rounded-3xl">La papelera está vacía.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// -------------------------
+// COMPONENTES DE ARCHIVO (ROW y CARD)
+// -------------------------
+function getFileIcon(mime) {
+  if (mime?.startsWith("image/")) return ImageIcon;
+  if (mime?.includes("pdf")) return FileText;
+  if (mime?.includes("spreadsheet") || mime?.includes("excel") || mime?.includes("csv")) return FileSpreadsheet;
+  if (mime?.includes("presentation") || mime?.includes("powerpoint")) return Presentation;
+  return FileText;
+}
+
+function FileRow({ file, onDelete, onPreview, theme }) {
+  const [copied, setCopied] = useState(false);
+  const Icon = getFileIcon(file.mime);
+
+  const shareWhatsApp = () => {
+    const text = `Hola! Aquí tienes el archivo "${file.name}": ${file.downloadURL}`;
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank");
+  };
+
+  const copyLink = async () => {
+    try { await navigator.clipboard.writeText(file.downloadURL); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch (err) {}
+  };
+
+  return (
+    <div className="group flex items-center justify-between p-4 bg-slate-900/40 border border-slate-800/50 rounded-2xl hover:border-slate-700 hover:bg-slate-900/80 transition-all">
+      <div className="flex items-center gap-4 min-w-0">
+        <div onClick={onPreview} className="h-12 w-12 rounded-xl bg-slate-800 flex items-center justify-center shrink-0 cursor-pointer hover:bg-slate-700 transition">
+          <Icon size={20} className={theme.text} />
+        </div>
+        <div className="min-w-0">
+          <div onClick={onPreview} className={`font-bold text-slate-200 truncate cursor-pointer hover:${theme.text} transition`}>{file.name}</div>
+          <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+            <span>{formatBytes(file.size)}</span>
+            <span>•</span>
+            <span>{new Date(file.uploadedAt).toLocaleDateString()}</span>
+            {file.tags && file.tags.length > 0 && <div className="flex gap-1">{file.tags.map((t,i) => <span key={i} className="bg-slate-800 px-1.5 rounded text-[10px] text-slate-400">#{t}</span>)}</div>}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button onClick={copyLink} className={`p-2 rounded-lg ${theme.light} ${theme.text} hover:opacity-80 transition`} title="Copiar Enlace">
+          {copied ? <Check size={18} /> : <Link2 size={18} />}
+        </button>
+        <button onClick={shareWhatsApp} className="p-2 rounded-lg bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366]/20 transition" title="WhatsApp">
+          <Share2 size={18} />
+        </button>
+        <button onClick={() => window.open(file.downloadURL, "_blank")} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"><Download size={18} /></button>
+        <button onClick={() => window.confirm("¿Mover a papelera?") && onDelete()} className="p-2 rounded-lg hover:bg-red-500/20 text-slate-500 hover:text-red-400 transition"><Trash2 size={18} /></button>
+      </div>
+    </div>
+  );
+}
+
+function FileCard({ file, onDelete, onPreview, theme }) {
+  const Icon = getFileIcon(file.mime);
+  const isImg = file.mime?.startsWith("image/");
+
+  return (
+    <div className="group relative aspect-square bg-slate-900/40 border border-slate-800/50 rounded-3xl hover:border-slate-700 hover:bg-slate-900/80 transition-all flex flex-col items-center justify-center p-4 text-center cursor-pointer" onClick={onPreview}>
+       {isImg ? (
+         <img src={file.downloadURL} alt="" className="h-16 w-16 object-cover rounded-xl mb-3 opacity-80 group-hover:opacity-100 transition" />
+       ) : (
+         <Icon size={48} className={`${theme.text} mb-3 opacity-80 group-hover:opacity-100 transition`} />
+       )}
+       <div className="font-bold text-sm text-slate-200 line-clamp-2">{file.name}</div>
+       <div className="text-xs text-slate-500 mt-1">{formatBytes(file.size)}</div>
+       
+       <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="absolute top-3 right-3 p-2 bg-slate-950/80 rounded-full text-red-400 opacity-0 group-hover:opacity-100 hover:bg-white hover:text-red-500 transition shadow-lg">
+         <Trash2 size={14}/>
+       </button>
+    </div>
+  );
+}
+
+// -------------------------
+// PREVIEW MODAL (OFFICE & IMAGES)
+// -------------------------
+function PreviewModal({ file, onClose, theme }) {
+  const isImg = file.mime?.startsWith("image/");
+  const isPdf = file.mime?.includes("pdf");
+  
+  // Detección Office
+  const name = file.name.toLowerCase();
+  const isOffice = name.endsWith(".docx") || name.endsWith(".doc") || name.endsWith(".xlsx") || name.endsWith(".xls") || name.endsWith(".pptx") || name.endsWith(".ppt");
+  
+  // URL para Google Viewer
+  const googleDocsUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(file.downloadURL)}&embedded=true`;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/95 flex flex-col animate-fade-in">
+      <div className="h-16 border-b border-slate-800 bg-slate-950 flex items-center justify-between px-6 shrink-0">
+        <div className="font-bold text-white truncate max-w-lg">{file.name}</div>
+        <div className="flex gap-4">
+           <a href={file.downloadURL} target="_blank" rel="noreferrer" className={`flex items-center gap-2 text-sm font-bold ${theme.text} hover:underline`}>
+             <Download size={16}/> Descargar
+           </a>
+           <button onClick={onClose} className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-white"><X size={20}/></button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-hidden bg-slate-900 flex items-center justify-center relative">
+        {isImg && <img src={file.downloadURL} alt="preview" className="max-h-full max-w-full object-contain" />}
+        {isPdf && <iframe src={file.downloadURL} className="w-full h-full border-0" title="PDF Preview"></iframe>}
+        {isOffice && <iframe src={googleDocsUrl} className="w-full h-full border-0" title="Office Preview"></iframe>}
+        
+        {!isImg && !isPdf && !isOffice && (
+           <div className="text-center">
+             <FileText size={64} className="mx-auto text-slate-600 mb-4" />
+             <p className="text-slate-400">Vista previa no disponible para este formato.</p>
+           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// -------------------------
+// UPLOAD MODAL
+// -------------------------
 function UploadModal({ subject, category, categoryLabel, onClose, onSuccess, theme }) {
   const [file, setFile] = useState(null);
   const [tags, setTags] = useState("");
@@ -588,109 +867,9 @@ function UploadModal({ subject, category, categoryLabel, onClose, onSuccess, the
   );
 }
 
-function FileRow({ file, onDelete, onPreview, theme }) {
-  const [copied, setCopied] = useState(false);
-  const isImage = file.mime?.startsWith("image/");
-  const Icon = isImage ? ImageIcon : FileText;
-
-  const shareWhatsApp = () => {
-    const text = `Hola! Aquí tienes el archivo "${file.name}": ${file.downloadURL}`;
-    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
-    window.open(url, "_blank");
-  };
-
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(file.downloadURL);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Error copiando", err);
-    }
-  };
-
-  return (
-    <div className="group flex items-center justify-between p-4 bg-slate-900/40 border border-slate-800/50 rounded-2xl hover:border-slate-700 hover:bg-slate-900/80 transition-all">
-      <div className="flex items-center gap-4 min-w-0">
-        <div onClick={onPreview} className="h-12 w-12 rounded-xl bg-slate-800 flex items-center justify-center shrink-0 cursor-pointer hover:bg-slate-700 transition">
-          <Icon size={20} className={theme.text} />
-        </div>
-        <div className="min-w-0">
-          <div onClick={onPreview} className={`font-bold text-slate-200 truncate cursor-pointer hover:${theme.text} transition`}>{file.name}</div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
-            <span>{formatBytes(file.size)}</span>
-            <span>•</span>
-            <span>{new Date(file.uploadedAt).toLocaleDateString()}</span>
-            {file.tags && file.tags.length > 0 && <div className="flex gap-1">{file.tags.map((t,i) => <span key={i} className="bg-slate-800 px-1.5 rounded text-[10px] text-slate-400">#{t}</span>)}</div>}
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={copyLink} className={`p-2 rounded-lg ${theme.light} ${theme.text} hover:opacity-80 transition`} title="Copiar Enlace Público">
-          {copied ? <Check size={18} /> : <Link2 size={18} />}
-        </button>
-        <button onClick={shareWhatsApp} className="p-2 rounded-lg bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366]/20 transition" title="Enviar enlace por WhatsApp">
-          <Share2 size={18} />
-        </button>
-        <button onClick={onPreview} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"><Eye size={18} /></button>
-        <button onClick={() => window.open(file.downloadURL, "_blank")} className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition"><Download size={18} /></button>
-        <button onClick={() => window.confirm("¿Borrar archivo?") && onDelete()} className="p-2 rounded-lg hover:bg-red-500/20 text-slate-500 hover:text-red-400 transition"><Trash2 size={18} /></button>
-      </div>
-    </div>
-  );
-}
-
-function PreviewModal({ file, onClose, theme }) {
-  const isImg = file.mime?.startsWith("image/");
-  const isPdf = file.mime?.includes("pdf");
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/90 flex flex-col animate-fade-in">
-      <div className="h-16 border-b border-slate-800 bg-slate-950 flex items-center justify-between px-6 shrink-0">
-        <div className="font-bold text-white truncate">{file.name}</div>
-        <button onClick={onClose} className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-white"><X size={20}/></button>
-      </div>
-      <div className="flex-1 overflow-hidden bg-slate-900 flex items-center justify-center relative">
-        {isImg && <img src={file.downloadURL} alt="preview" className="max-h-full max-w-full object-contain" />}
-        {isPdf && <iframe src={file.downloadURL} className="w-full h-full border-0" title="PDF Preview"></iframe>}
-        {!isImg && !isPdf && (
-           <div className="text-center">
-             <FileText size={64} className="mx-auto text-slate-600 mb-4" />
-             <p className="text-slate-400">Vista previa no disponible.</p>
-             <a href={file.downloadURL} target="_blank" rel="noreferrer" className={`mt-4 inline-block ${theme.text} hover:underline`}>Descargar archivo</a>
-           </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Archives({ cfg, meta, query, onDeleteFile, onPreview, theme }) {
-  const subjects = cfg.subjects || [];
-  const [cat, setCat] = useState("all");
-  const filtered = useMemo(() => {
-    const q = normalize(query);
-    return meta
-      .filter(m => cat === "all" || m.category === cat)
-      .filter(m => {
-        if (!q) return true;
-        const name = normalize(m.name);
-        const tags = m.tags ? m.tags.map(t => normalize(t)) : [];
-        return name.includes(q) || tags.some(t => t.includes(q));
-      })
-      .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-  }, [meta, cat, query]);
-
-  return (
-    <div className="space-y-6">
-      <h1 className="text-3xl font-black">Todos los Archivos</h1>
-      <div className="space-y-3">
-        {filtered.map(f => <FileRow key={f.id} file={f} onDelete={() => onDeleteFile(f)} onPreview={() => onPreview(f)} theme={theme} />)}
-      </div>
-    </div>
-  );
-}
-
+// -------------------------
+// SETTINGS PAGE
+// -------------------------
 function SettingsPage({ user, cfg, setCfg, theme }) {
   const [activeTab, setActiveTab] = useState("general");
   const [academyName, setAcademyName] = useState(cfg.academyName || "");

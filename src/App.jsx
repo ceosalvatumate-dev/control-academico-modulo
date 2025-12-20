@@ -337,7 +337,7 @@ function Sidebar({ cfg, theme, meta, mobileOpen, closeMobile }) {
 
   // Calculo de almacenamiento (simulado 1GB)
   const usedBytes = meta.reduce((acc, f) => acc + (f.size || 0), 0);
-  const maxBytes = 1024 * 1024 * 1024; // 1GB
+  const maxBytes = 5*1024 * 1024 * 1024; // 5GB
   const percentUsed = Math.min((usedBytes / maxBytes) * 100, 100);
 
   const sidebarClasses = `

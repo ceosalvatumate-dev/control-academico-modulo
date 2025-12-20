@@ -335,7 +335,7 @@ function Sidebar({ cfg, theme, meta, mobileOpen, closeMobile }) {
   const loc = useLocation();
   const isActive = (path) => loc.pathname === path;
 
-  // Calculo de almacenamiento (simulado 1GB)
+  // Calculo de almacenamiento (simulado 5GB)
   const usedBytes = meta.reduce((acc, f) => acc + (f.size || 0), 0);
   const maxBytes = 5*1024 * 1024 * 1024; // 5GB
   const percentUsed = Math.min((usedBytes / maxBytes) * 100, 100);
@@ -392,7 +392,7 @@ function Sidebar({ cfg, theme, meta, mobileOpen, closeMobile }) {
              <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
                <div className={`h-full ${theme.bg}`} style={{ width: `${percentUsed}%` }}></div>
              </div>
-             <div className="text-[10px] text-slate-500 mt-1 text-right">{formatBytes(usedBytes)} / 1 GB</div>
+             <div className="text-[10px] text-slate-500 mt-1 text-right">{formatBytes(usedBytes)} / 5 GB</div>
           </div>
         </div>
       </aside>

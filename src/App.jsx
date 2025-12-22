@@ -261,7 +261,7 @@ function Shell({ user }) {
   const handlePermanentDelete = async (f) => {
     if(!user?.uid) return;
     if(window.confirm("¿Eliminar definitivamente?")) {
-      await deleteUserFile(user.uid, f.id);
+      await permanentDeleteFile(user.uid, f.id);
       if(f.downloadURL) await deleteFileFromStorage(f.downloadURL);
     }
   };
